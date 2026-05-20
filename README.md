@@ -1,8 +1,8 @@
-## scDesign3
+## scDesign3-fast
 
 ------------------------------------------------------------------------
 
-The R package **scDesign3** is an all-in-one single-cell data simulation tool by using reference datasets with different cell states (cell types, trajectories or and spatial coordinates), different modalities (gene expression, chromatin accessibility, protein abundance, DNA methylation, etc), and complex experimental designs. The transparent parameters enable users to alter models as needed; the model evaluation metrics (AIC, BIC) and convenient visualization function help users select models. <span style="color:blue"> **Detailed tutorials that illustrate various functionalities of scDesign3 are available at this [website](https://songdongyuan1994.github.io/scDesign3/docs/index.html)**</span>. The following illustration figure summarizes the usage of scDesign3:
+The R package **scDesign3-fast** is an accelerated distribution of **scDesign3**. It keeps the original `scDesign3` R package name and user-facing API, while adding shared-design GLM/GAM backends through **scGLM** to reduce repeated design-matrix construction and speed up supported marginal model fitting. The package is an all-in-one single-cell data simulation tool by using reference datasets with different cell states (cell types, trajectories or and spatial coordinates), different modalities (gene expression, chromatin accessibility, protein abundance, DNA methylation, etc), and complex experimental designs. The transparent parameters enable users to alter models as needed; the model evaluation metrics (AIC, BIC) and convenient visualization function help users select models. <span style="color:blue"> **Detailed tutorials that illustrate various functionalities of scDesign3 are available at this [website](https://songdongyuan1994.github.io/scDesign3/docs/index.html)**</span>. The following illustration figure summarizes the usage of scDesign3:
 
 <img src="man/figures/scDesign3_illustration.png" width="600"/>
 
@@ -30,10 +30,10 @@ To install the development version from GitHub, please run:
 ``` r
 if (!require("devtools", quietly = TRUE))
     install.packages("devtools")
-devtools::install_github("SONGDONGYUAN1994/scDesign3")
+devtools::install_github("dsong-lab/scDesign3-fast")
 ```
 
-We are now working on submitting it to Bioconductor and will provide the link once online.
+The installed R package is still loaded as `library(scDesign3)`, because R package names cannot contain hyphens.
 
 ## Quick Start<a name="quick-start"></a>
 
@@ -76,12 +76,12 @@ The parameters of `scdesign3()` are:
 - `celltype`: A string of the column name of the cell type variable in the colData of the sce. Default is 'cell_type'. The cell type variable in the colData of the sce should be a factor variable. Use NULL if there is no column in the colData that contains the cell-type information. 
 - `pseudotime`: A string or a string vector of the name of pseudotime and (if exist) multiple lineages. Default is NULL. If the data only has one lineage, then this parameter should be the column name of the pseudotime variable in the colData of the sce. If the data has multiple lingaes, then this parameter be the column names of the pseudotime variables for each lineage and the variables indicating which lineage that a cell belongs to. The pseudotime variables should be continuous numeric variables.
 - `spatial`: A length-two string vector of the column names of spatial coordinates in the colData of sce. Default is NULL. 
-- `other_covariate`: A string or a string vector of the other covariates in the colData of sce you want to include in the data. For example, you can put the column names of the batch variables and/or condition variables in the colData of sce here if your sce contains these information and you want to include these variables in`mu_formula` or `sigma_formula` or `corr_formula`.
+- `other_covariates`: A string or a string vector of the other covariates in the colData of sce you want to include in the data. For example, you can put the column names of the batch variables and/or condition variables in the colData of sce here if your sce contains these information and you want to include these variables in `mu_formula`, `sigma_formula`, or `corr_formula`.
 - `mu_formula`: A string of the mu parameter formula for fitting each gene's marginal distribution.
 - `sigma_formula`: A string of the sigma parameter formula for fitting each gene's marginal distribution.
 - `family_use`: A string of the marginal distribution you want to use when fitting each gene's marginal distribution. Must be one of 'poisson', 'nb', 'zip', 'zinb' or 'gaussian'.
 - `n_cores`: An integer. The number of cores to use.
-- `correlation_function`: A string. If 'default', the function from Rfast; if 'coop', the function from coop, which calls BLAS.
+- `correlation_function`: A string. If 'default', use the package default correlation implementation; if 'coop', use the implementation from `coop`, which calls BLAS.
 - `usebam`: A logic variable. If TRUE, use bam (generalized additive models for very large datasets) for acceleration.
 - `edf_flexible`: A logic variable. If TRUE, the degree of freedom for each gene's regression model will be automatically selected for acceleration.
 - `corr_formula`: A string of the correlation structure. For example, if you want to obtain a correlation structure for each cell type, then this parameter should be the column name of the cell type variable in the colData of sce.
@@ -96,14 +96,14 @@ The parameters of `scdesign3()` are:
 - `nonzerovar`: A logical variable. If TRUE, for any gene with zero variance, a cell will be replaced with 1. This is designed for avoiding potential errors, for example, PCA.
 - `parallelization`: A string indicating the specific parallelization function to use. Must be one of 'mcmapply', 'bpmapply', or 'pbmcmapply', which corresponds to the parallelization function in the package parallel,BiocParallel, and pbmcapply respectively. The default value is 'mcmapply'.
 - `BPPARAM`: A MulticoreParam object or NULL. When the parameter parallelization = 'mcmapply' or 'pbmcmapply', this parameter must be NULL. When the parameter parallelization = 'bpmapply', this parameter must be one of the MulticoreParam object offered by the package 'BiocParallel. The default value is NULL.
-- `TRACE`: A logic variable. If TRUE, the warning/error log and runtime for gam/gamlss will be returned, FALSE otherwise. Default is FALSE.
+- `trace`: A logic variable. If TRUE, the warning/error log and runtime for gam/gamlss will be returned, FALSE otherwise. Default is FALSE.
 
 The output of `scdesign3()` is a list which includes:
 
 -   `new_count`: This is the synthetic count matrix generated by `scdesign3()`.
 -   `new_covariate`:
     -   If the parameter `ncell` is set to a number that is different from the number of cells in the input data, this will be a matrix that has the new cell covariates that are used for generating new data.
-    -   If the parameter `ncell` is the default value, this will be `NULL`.
+    -   If the parameter `ncell` is the default value, this will contain the original covariates used for fitting and simulation.
 -   `model_aic`: This is a vector include the genes' marginal models' AIC, fitted copula's AIC, and total AIC, which is the sum of the previous two.
 -   `model_bic`: This is a vector include the genes' marginal models' BIC, fitted copula's BIC, and total BIC, which is the sum of the previous two.
 -   `marginal_list`:

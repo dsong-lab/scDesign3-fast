@@ -49,7 +49,9 @@ A list with the components:
 \describe{
   \item{\code{count_mat}}{The expression matrix}
   \item{\code{dat}}{The original covariate matrix}
-  \item{\code{newCovariate}}{The simulated new covariate matrix, is NULL if the parameter ncell is default}
+\item{\code{new_covariate}}{The covariate matrix used for simulation. If \code{ncell} differs from the input cell count, this is the simulated covariate matrix; otherwise it is the original covariate matrix.}
+
+\item{\code{newCovariate}}{A legacy alias of \code{new_covariate} kept for backward compatibility.}
   \item{\code{filtered_gene}}{The genes that are excluded in the marginal and copula fitting 
 steps because these genes only express in less than two cells.}
 }

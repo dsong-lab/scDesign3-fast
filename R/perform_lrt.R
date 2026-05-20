@@ -83,20 +83,26 @@ perform_lrt <- function(alter_marginal,
     ## gather up degrees of freedom
     if(methods::is(fit1, "gamlss")) {
       k1 <- fit1$df.fit
+    } else if (methods::is(fit1, "scdesign3_scglm") ||
+               .scdesign3_is_categorical_dist(fit1)) {
+      k1 <- fit1$df
     } else if (methods::is(fit1, "gam"))
     {
       k1 <- sum(fit1$edf2 + fit1$edf1 - fit1$edf)
     } else {
-      stop("Model must be either gamlss or mgcv::gam!")
+      stop("Model must be either gamlss, mgcv::gam, or scDesign3's scGLM/categorical backend!")
     }
 
     if(methods::is(fit2, "gamlss")) {
       k2 <- fit2$df.fit
+    } else if (methods::is(fit2, "scdesign3_scglm") ||
+               .scdesign3_is_categorical_dist(fit2)) {
+      k2 <- fit2$df
     } else if (methods::is(fit2, "gam"))
     {
       k2 <- sum(fit2$edf2 + fit2$edf1 - fit2$edf)
     } else {
-      stop("Model must be either gamlss or mgcv::gam!")
+      stop("Model must be either gamlss, mgcv::gam, or scDesign3's scGLM/categorical backend!")
     }
 
     #k1 <- length(coef(m1))

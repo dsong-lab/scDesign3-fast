@@ -27,7 +27,8 @@
 #' \describe{
 #'   \item{\code{count_mat}}{The expression matrix}
 #'   \item{\code{dat}}{The original covariate matrix}
-#'   \item{\code{newCovariate}}{The simulated new covariate matrix, is NULL if the parameter ncell is default}
+#'   \item{\code{new_covariate}}{The covariate matrix used for simulation. If \code{ncell} differs from the input cell count, this is the simulated covariate matrix; otherwise it is the original covariate matrix.}
+#'   \item{\code{newCovariate}}{A legacy alias of \code{new_covariate} kept for backward compatibility.}
 #'   \item{\code{filtered_gene}}{The genes that are excluded in the marginal and copula fitting 
 #' steps because these genes only express in less than two cells.}
 #' }
@@ -64,8 +65,7 @@ construct_data <- function(sce,
     stop("Please make sure your inputted SingleCellExperiment object does not have duplicate gene names")
   }
   ## Extract expression matrix
-  count_mat <-
-    t(as.matrix(SummarizedExperiment::assay(sce, assay_use)))
+  count_mat <- .scdesign3_transposed_assay(sce, assay_use)
   ## Extract col data
   coldata_mat <- data.frame(SummarizedExperiment::colData(sce))
   
@@ -123,9 +123,9 @@ construct_data <- function(sce,
   
   ## check if user wants to simulate new number of cells
   if(ncell != dim(dat)[1]){
-    newCovariate <- as.data.frame(simuCovariateMat(dat,ncell, parallelization, BPPARAM))
+    new_covariate <- as.data.frame(simuCovariateMat(dat,ncell, parallelization, BPPARAM))
   }else{
-    newCovariate <- dat
+    new_covariate <- dat
   }
   
   # identify groups
@@ -135,24 +135,24 @@ construct_data <- function(sce,
   if(ncell != dim(dat)[1]){
     if (group[1] == "1") {
       corr_group <- rep(1, n_cell)
-      corr_group2 <- rep(1, dim(newCovariate)[1])
+      corr_group2 <- rep(1, dim(new_covariate)[1])
     } else if (group[1] == "ind"){
       corr_group <- rep("ind", n_cell)
-      corr_group2 <- rep("ind", dim(newCovariate)[1])
+      corr_group2 <- rep("ind", dim(new_covariate)[1])
     } else if (group[1] == "pseudotime" | length(group) > 1) {
       ## For continuous pseudotime, discretize it
       corr_group <- SummarizedExperiment::colData(sce)[, group]
       mclust_mod <- mclust::Mclust(corr_group, G = seq_len(5))
       corr_group <- mclust_mod$classification
       
-      corr_group2 <- newCovariate[, group]
+      corr_group2 <- new_covariate[, group]
       corr_group2 <- mclust::predict.Mclust(mclust_mod, newdata = corr_group2)$classification
       
     } else {
       corr_group <- SummarizedExperiment::colData(sce)[, group]
-      corr_group2 <- newCovariate[, group]
+      corr_group2 <- new_covariate[, group]
     }
-    newCovariate$corr_group <- corr_group2
+    new_covariate$corr_group <- corr_group2
   }else{
     if (group[1] == "1") {
       corr_group <- rep(1, n_cell)
@@ -171,15 +171,19 @@ construct_data <- function(sce,
   }
   dat$corr_group <- corr_group
   
-  qc <- apply(count_mat, 2, function(x){
-    return(length(which(x < 1e-5)) > length(x) - 2)
-  })
+  qc <- .scdesign3_gene_zero_prop(sce, assay_use) > (1 - 2 / n_cell)
   if(length(which(qc)) == 0){
     filtered_gene <- NULL
   }else{
     filtered_gene <- names(which(qc)) 
   }
-  return(list(count_mat = count_mat, dat = dat, newCovariate = newCovariate, filtered_gene = filtered_gene))
+  return(list(
+    count_mat = count_mat,
+    dat = dat,
+    new_covariate = new_covariate,
+    newCovariate = new_covariate,
+    filtered_gene = filtered_gene
+  ))
 }
 
 
@@ -224,14 +228,14 @@ simuCovariateMat <- function(covariate_mat,
         df <- dplyr::select(df, -"discrete_group")
         df_numeric <- dplyr::select_if(df, is.numeric)
         df_factor <- dplyr::select_if(df, is.factor)
-        if(n == 0){
-          return(NA)
+        n <- as.integer(n)
+        if(n <= 0){
+          return(df[0, , drop = FALSE])
         }
-        fit_kde <- rvinecopulib::vine(df_numeric, cores = 1)
-        new_dat <- rvinecopulib::rvine(n, fit_kde)
-        
-        new_dat <- as.data.frame(new_dat)
-        new_dat[colnames(df_factor)] <- df_factor[1, ]
+        new_dat <- .scdesign3_simulate_numeric_covariates(df_numeric, n)
+        if (ncol(df_factor) > 0L) {
+          new_dat[colnames(df_factor)] <- df_factor[rep(1L, n), , drop = FALSE]
+        }
         new_dat
         
       }}
@@ -241,7 +245,7 @@ simuCovariateMat <- function(covariate_mat,
       }else{
         new_dat_list <- paraFunc(FUN = dat_function , df = df_list, n = group_n_new,SIMPLIFY = FALSE)
       }
-      covariate_new <- do.call("rbind", new_dat_list[!is.na(new_dat_list)])
+      covariate_new <- do.call("rbind", new_dat_list)
     }
     else {
       dat_function <- function(df, n) {
@@ -263,10 +267,47 @@ simuCovariateMat <- function(covariate_mat,
     }
   }
   else {
-    fit_kde <- rvinecopulib::vine(df, cores = 1)
-    covariate_new <- rvinecopulib::rvine(n_cell_new, fit_kde)
+    covariate_new <- .scdesign3_simulate_numeric_covariates(df, n_cell_new)
   }
   
   rownames(covariate_new) <- paste0("Cell", seq_len(n_cell_new))
   return(covariate_new)
+}
+
+.scdesign3_simulate_numeric_covariates <- function(df_numeric, n) {
+  df_numeric <- as.data.frame(df_numeric)
+  n <- as.integer(n)
+  if (n <= 0L) {
+    return(df_numeric[0, , drop = FALSE])
+  }
+  if (ncol(df_numeric) == 0L) {
+    return(data.frame(row.names = seq_len(n)))
+  }
+
+  if (requireNamespace("rvinecopulib", quietly = TRUE) &&
+      ncol(df_numeric) > 1L &&
+      nrow(df_numeric) > 1L) {
+    out <- tryCatch({
+      fit_kde <- rvinecopulib::vine(df_numeric, cores = 1)
+      as.data.frame(rvinecopulib::rvine(n, fit_kde))
+    }, error = function(e) NULL)
+    if (!is.null(out) && nrow(out) == n) {
+      colnames(out) <- colnames(df_numeric)
+      return(out)
+    }
+  }
+
+  idx <- sample.int(nrow(df_numeric), size = n, replace = TRUE)
+  out <- as.data.frame(df_numeric[idx, , drop = FALSE])
+  rownames(out) <- NULL
+  colnames(out) <- colnames(df_numeric)
+  out
+}
+
+.scdesign3_transposed_assay <- function(sce, assay_use) {
+  mat <- SummarizedExperiment::assay(sce, assay_use)
+  if (methods::is(mat, "sparseMatrix")) {
+    return(Matrix::t(mat))
+  }
+  t(as.matrix(mat))
 }

@@ -12,6 +12,10 @@ fit_marginal(
   family_use,
   n_cores,
   usebam = FALSE,
+  use_scglm = c("auto", "always", "never"),
+  scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls",
+    "newton_stein"),
+  scglm_batch_size = 256L,
   edf_flexible = FALSE,
   parallelization = "mcmapply",
   BPPARAM = NULL,
@@ -37,6 +41,19 @@ and 'gaussian distribution' respectively.}
 \item{n_cores}{An integer. The number of cores to use.}
 
 \item{usebam}{A logic variable. If use \code{\link[mgcv]{bam}} for acceleration.}
+
+\item{use_scglm}{A string indicating whether to use the optional batched
+\code{scGLM} marginal backend. Must be one of \code{"auto"},
+\code{"always"}, or \code{"never"}. \code{"auto"} uses scGLM when installed
+and when the requested model is supported. For categorical shared designs,
+\code{"auto"} uses the scGLM categorical closed-form backend by default.
+Unsupported models fall back to the original per-feature mgcv/gamlss path.}
+
+\item{scglm_method}{A string selecting the scGLM matrix backend. Must be one
+of \code{"auto"}, \code{"categorical_closed_form"},
+\code{"categorical_irls"}, \code{"irls"}, or \code{"newton_stein"}.}
+
+\item{scglm_batch_size}{Number of features to process per scGLM batch.}
 
 \item{edf_flexible}{A logic variable. It uses simpler model to accelerate the marginal fitting with a mild loss of accuracy. If TRUE, the fitted regression model will use the fitted relationship between Gini coefficient and the effective degrees of freedom on a random selected gene sets. Default is FALSE.}
 

@@ -63,28 +63,7 @@ ga <- function(formula, envir, control = ga.control(...), ...)
     stats::as.formula(paste0("Y.var", deparse(formula, width.cutoff = 500L)))
 
   Data$Y.var <- rep(0, nrow(Data))
-  G <- mgcv::gam(
-    formula,
-    data = Data,
-    offset = control$offset,
-    method = control$method,
-    optimizer = control$optimizer,
-    control = control$control,
-    scale =  control$scale,
-    select = control$select,
-    knots = control$knots,
-    sp = control$sp,
-    min.sp = control$min.sp,
-    H = control$H,
-    gamma = control$gamma,
-    paraPen = control$paraPen,
-    in.out = control$in.out,
-    drop.unused.levels = control$drop.unused.levels,
-    drop.intercept = control$drop.intercept,
-    discrete = control$discrete,
-    G = NULL,
-    fit = FALSE
-  )
+  G <- .scdesign3_gamlss_ga_prefit(formula, Data, control)
   #--------------------------------------------------
   xvar <- rep(0,  dim(Data)[1])
   attr(xvar, "formula")     <- formula
@@ -149,33 +128,7 @@ ba <-function(formula, control = ba.control(...), ...)
   formula <- stats::as.formula(paste0("Y.var", Reduce(paste,deparse(formula, width.cutoff = 500L)) ))
   Data$Y.var = rep(0, nrow(Data))
   #browser()
-  G = mgcv::bam(formula,
-                data = Data,
-                offset = control$offset,
-                method = control$method,
-                control = control$control,
-                select = control$select,
-                scale = control$scale,
-                gamma = control$gamma,
-                knots = control$knots,
-                sp = control$sp,
-                min.sp = control$min.sp,
-                paraPen = control$paraPen,
-                chunk.size = control$chunk.size,
-                rho = control$rho,
-                AR.start = control$AR.start,
-                discrete = control$discrete,
-                cluster = control$cluster,
-                nthreads = control$nthreads,
-                gc.level = control$gc.level,
-                use.chol = control$use.chol,
-                samfrac = control$samfrac,
-                coef = control$coef,
-                drop.unused.levels = control$drop.unused.levels,
-                drop.intercept = control$drop.intercept,
-                G = NULL,
-                fit = FALSE
-  )
+  G <- .scdesign3_gamlss_ba_prefit(formula, Data, control)
   ##bam(formula, family=gaussian(),
   ##      data=list()#, weights=NULL, subset=NULL,
   #    na.action=na.omit, offset=NULL#, method="fREML"#,control=list()#,
@@ -465,6 +418,121 @@ gamlss.ba <-function(x, y, w, xeval = NULL, ...) {
   }
 }
 
+.scdesign3_gamlss_ga_prefit <- function(formula, data, control) {
+  .scdesign3_gamlss_prefit(
+    engine = "ga",
+    formula = formula,
+    data = data,
+    control = control,
+    builder = function() {
+      mgcv::gam(
+        formula,
+        data = data,
+        offset = control$offset,
+        method = control$method,
+        optimizer = control$optimizer,
+        control = control$control,
+        scale = control$scale,
+        select = control$select,
+        knots = control$knots,
+        sp = control$sp,
+        min.sp = control$min.sp,
+        H = control$H,
+        gamma = control$gamma,
+        paraPen = control$paraPen,
+        in.out = control$in.out,
+        drop.unused.levels = control$drop.unused.levels,
+        drop.intercept = control$drop.intercept,
+        discrete = control$discrete,
+        G = NULL,
+        fit = FALSE
+      )
+    }
+  )
+}
+
+.scdesign3_gamlss_ba_prefit <- function(formula, data, control) {
+  .scdesign3_gamlss_prefit(
+    engine = "ba",
+    formula = formula,
+    data = data,
+    control = control,
+    builder = function() {
+      mgcv::bam(
+        formula,
+        data = data,
+        offset = control$offset,
+        method = control$method,
+        control = control$control,
+        select = control$select,
+        scale = control$scale,
+        gamma = control$gamma,
+        knots = control$knots,
+        sp = control$sp,
+        min.sp = control$min.sp,
+        paraPen = control$paraPen,
+        chunk.size = control$chunk.size,
+        rho = control$rho,
+        AR.start = control$AR.start,
+        discrete = control$discrete,
+        cluster = control$cluster,
+        nthreads = control$nthreads,
+        gc.level = control$gc.level,
+        use.chol = control$use.chol,
+        samfrac = control$samfrac,
+        coef = control$coef,
+        drop.unused.levels = control$drop.unused.levels,
+        drop.intercept = control$drop.intercept,
+        G = NULL,
+        fit = FALSE
+      )
+    }
+  )
+}
+
+.scdesign3_gamlss_prefit <- function(engine,
+                                     formula,
+                                     data,
+                                     control,
+                                     builder) {
+  cache_env <- getOption(".scdesign3_gamlss_cache_env", NULL)
+  if (!is.environment(cache_env)) {
+    return(builder())
+  }
+
+  key <- .scdesign3_gamlss_prefit_key(engine, formula, data, control)
+  if (exists(key, envir = cache_env, inherits = FALSE)) {
+    return(get(key, envir = cache_env, inherits = FALSE))
+  }
+
+  G <- builder()
+  assign(key, G, envir = cache_env)
+  G
+}
+
+.scdesign3_gamlss_prefit_key <- function(engine, formula, data, control) {
+  control_fields <- intersect(
+    names(control),
+    c(
+      "method", "optimizer", "scale", "select", "knots", "sp", "min.sp",
+      "H", "gamma", "paraPen", "in.out", "drop.unused.levels",
+      "drop.intercept", "discrete", "chunk.size", "rho", "AR.start",
+      "cluster", "nthreads", "gc.level", "use.chol", "samfrac", "coef"
+    )
+  )
+  paste(
+    engine,
+    paste(deparse(formula, width.cutoff = 500L), collapse = ""),
+    nrow(data),
+    paste(control_fields, vapply(control[control_fields], .scdesign3_cache_deparse, character(1)), sep = "=", collapse = "\r"),
+    sep = "\n"
+  )
+}
+
+.scdesign3_cache_deparse <- function(x) {
+  paste(deparse(x, width.cutoff = 500L), collapse = "")
+}
+
 # Accessed from gamlss's github 04/10/2023
 #' @export
 predict.gamlss <- function(object,
@@ -725,7 +793,5 @@ predict.gamlss <- function(object,
   names(pred) <- rownames(newdata)
   pred
 }
-
-
 
 

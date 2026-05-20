@@ -15,8 +15,14 @@
 #' @param family_use A string of the marginal distribution.
 #' Must be one of 'poisson', 'nb', 'zip', 'zinb' or 'gaussian'.
 #' @param n_cores An integer. The number of cores to use.
-#' @param correlation_function A string. If 'default', the function from \code{Rfast}; if 'coop', the function from \code{coop}, which calls BLAS.
+#' @param correlation_function A string. If 'default', use the package default correlation implementation; if 'coop', use the implementation from \code{coop}, which calls BLAS.
 #' @param usebam A logic variable. If use \code{\link[mgcv]{bam}} for acceleration in marginal fitting.
+#' @param use_scglm A string indicating whether to use the optional batched
+#' \code{scGLM} marginal backend. Must be one of \code{"auto"},
+#' \code{"always"}, or \code{"never"}. For categorical shared designs,
+#' \code{"auto"} uses the scGLM categorical closed-form backend by default.
+#' @param scglm_method A string selecting the scGLM matrix backend.
+#' @param scglm_batch_size Number of features to process per scGLM batch.
 #' @param edf_flexible A logic variable. It is used for accelerating for spatial model if k is large in 'mu_formula'. Default is FALSE.
 #' @param corr_formula A string of the correlation structure.
 #' @param empirical_quantile Please only use it if you clearly know what will happen! A logic variable. If TRUE, DO NOT fit the copula and use the EMPIRICAL CDF values of the original data; it will make the simulated data fixed (no randomness). Default is FALSE. Only works if ncell is the same as your original data.
@@ -50,7 +56,7 @@
 #' @return A list with the components:
 #' \describe{
 #'   \item{\code{new_count}}{A matrix of the new simulated count (expression) matrix.}
-#'   \item{\code{new_covariate}}{A data.frame of the new covariate matrix.}
+#'   \item{\code{new_covariate}}{A data.frame of the covariates used for simulation. If \code{ncell} is unchanged, this contains the original covariates.}
 #'   \item{\code{model_aic}}{The model AIC.}
 #'   \item{\code{marginal_list}}{A list of marginal regression models if return_model = TRUE.}
 #'   \item{\code{corr_list}}{A list of correlation models (conditional copulas) if return_model = TRUE.}
@@ -93,6 +99,9 @@ scdesign3 <- function(sce,
                       n_cores = 2,
                       correlation_function = "default",
                       usebam = FALSE,
+                      use_scglm = c("auto", "always", "never"),
+                      scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
+                      scglm_batch_size = 256L,
                       edf_flexible = FALSE,
                       corr_formula,
                       empirical_quantile = FALSE,
@@ -111,6 +120,35 @@ scdesign3 <- function(sce,
                       n_rep = 1,
                       BPPARAM = NULL,
                       trace = FALSE) {
+  allowed_family <- c("binomial", "poisson", "nb", "zip", "zinb", "gaussian")
+  allowed_copula <- c("gaussian", "vine")
+  allowed_parallelization <- c("mcmapply", "bpmapply", "pbmcmapply")
+  allowed_correlation_function <- c("default", "coop")
+  use_scglm <- match.arg(use_scglm)
+  scglm_method <- match.arg(scglm_method)
+
+  if (!copula %in% allowed_copula) {
+    stop("copula must be one of 'gaussian' or 'vine'.")
+  }
+  if (!parallelization %in% allowed_parallelization) {
+    stop("parallelization must be one of 'mcmapply', 'bpmapply', or 'pbmcmapply'.")
+  }
+  if (!correlation_function %in% allowed_correlation_function) {
+    stop("correlation_function must be one of 'default' or 'coop'.")
+  }
+  if (length(family_use) < 1 || any(!family_use %in% allowed_family)) {
+    stop("family_use must contain only 'binomial', 'poisson', 'nb', 'zip', 'zinb', or 'gaussian'.")
+  }
+  if (n_rep < 1 || length(n_rep) != 1 || !is.numeric(n_rep)) {
+    stop("n_rep must be a positive integer.")
+  }
+  if (n_rep != as.integer(n_rep)) {
+    stop("n_rep must be an integer.")
+  }
+  if (empirical_quantile && ncell != dim(sce)[2]) {
+    stop("empirical_quantile = TRUE only works when ncell equals the number of cells in sce.")
+  }
+
   message("Input Data Construction Start")
 
   input_data <- construct_data(
@@ -135,6 +173,9 @@ scdesign3 <- function(sce,
     data = input_data,
     family_use = family_use,
     usebam = usebam,
+    use_scglm = use_scglm,
+    scglm_method = scglm_method,
+    scglm_batch_size = scglm_batch_size,
     edf_flexible = edf_flexible,
     parallelization = parallelization,
     BPPARAM = BPPARAM,
@@ -153,6 +194,8 @@ scdesign3 <- function(sce,
       family_use = family_use,
       empirical_quantile = TRUE,
       copula = copula,
+      DT = DT,
+      pseudo_obs = pseudo_obs,
       family_set = family_set,
       n_cores = n_cores,
       important_feature = important_feature,
@@ -169,6 +212,8 @@ scdesign3 <- function(sce,
       marginal_list = marginal_res,
       family_use = family_use,
       copula = copula,
+      DT = DT,
+      pseudo_obs = pseudo_obs,
       family_set = family_set,
       n_cores = n_cores,
       correlation_function = correlation_function,
@@ -189,13 +234,12 @@ scdesign3 <- function(sce,
     marginal_list = marginal_res,
     n_cores = n_cores,
     family_use = family_use,
-    new_covariate = input_data$newCovariate,
+    new_covariate = input_data$new_covariate,
     parallelization = parallelization,
     BPPARAM = BPPARAM,
     data = input_data$dat
   )
-  message("Parameter
-Extraction End")
+  message("Parameter Extraction End")
 
   message("Start Generate New Data")
   
@@ -209,11 +253,12 @@ Extraction End")
       quantile_mat = copula_res$quantile_mat,
       copula_list = NULL,
       n_cores = n_cores,
+      fastmvn = fastmvn,
       family_use = family_use,
       nonnegative = nonnegative,
       nonzerovar = nonzerovar,
       input_data = input_data$dat,
-      new_covariate = input_data$newCovariate,
+      new_covariate = input_data$new_covariate,
       important_feature = copula_res$important_feature,
       parallelization = parallelization,
       BPPARAM = BPPARAM,
@@ -230,11 +275,12 @@ Extraction End")
         quantile_mat = NULL,
         copula_list = copula_res$copula_list,
         n_cores = n_cores,
+        fastmvn = fastmvn,
         family_use = family_use,
         nonnegative = nonnegative,
         nonzerovar = nonzerovar,
         input_data = input_data$dat,
-        new_covariate = input_data$newCovariate,
+        new_covariate = input_data$new_covariate,
         important_feature = copula_res$important_feature,
         parallelization = parallelization,
         BPPARAM = BPPARAM,
@@ -251,11 +297,12 @@ Extraction End")
           quantile_mat = NULL,
           copula_list = copula_res$copula_list,
           n_cores = n_cores,
+          fastmvn = fastmvn,
           family_use = family_use,
           nonnegative = nonnegative,
           nonzerovar = nonzerovar,
           input_data = input_data$dat,
-          new_covariate = input_data$newCovariate,
+          new_covariate = input_data$new_covariate,
           important_feature = copula_res$important_feature,
           parallelization = parallelization,
           BPPARAM = BPPARAM,
@@ -270,7 +317,7 @@ Extraction End")
 
   scdesign3_res <- list(
     new_count = new_count,
-    new_covariate = input_data$newCovariate,
+    new_covariate = input_data$new_covariate,
     model_aic = copula_res$model_aic,
     model_bic = copula_res$model_bic,
     marginal_list = if (return_model)
@@ -284,8 +331,4 @@ Extraction End")
   )
   return(scdesign3_res)
 }
-
-
-
-
 

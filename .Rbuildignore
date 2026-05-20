@@ -1,5 +1,8 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^\.git(/|$)
+^\.codex(/|$)
+^\.agents(/|$)
 ^LICENSE\.md$
 
 # Retrieved 2017-Oct-12 from https://github.com/github/gitignore/blob/master/R.gitignore

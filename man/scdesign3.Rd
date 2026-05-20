@@ -18,6 +18,10 @@ scdesign3(
   n_cores = 2,
   correlation_function = "default",
   usebam = FALSE,
+  use_scglm = c("auto", "always", "never"),
+  scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls",
+    "newton_stein"),
+  scglm_batch_size = 256L,
   edf_flexible = FALSE,
   corr_formula,
   empirical_quantile = FALSE,
@@ -63,9 +67,18 @@ Must be one of 'poisson', 'nb', 'zip', 'zinb' or 'gaussian'.}
 
 \item{n_cores}{An integer. The number of cores to use.}
 
-\item{correlation_function}{A string. If 'default', the function from \code{Rfast}; if 'coop', the function from \code{coop}, which calls BLAS.}
+\item{correlation_function}{A string. If 'default', use the package default correlation implementation; if 'coop', use the implementation from \code{coop}, which calls BLAS.}
 
 \item{usebam}{A logic variable. If use \code{\link[mgcv]{bam}} for acceleration in marginal fitting.}
+
+\item{use_scglm}{A string indicating whether to use the optional batched
+\code{scGLM} marginal backend. Must be one of \code{"auto"},
+\code{"always"}, or \code{"never"}. For categorical shared designs,
+\code{"auto"} uses the scGLM categorical closed-form backend by default.}
+
+\item{scglm_method}{A string selecting the scGLM matrix backend.}
+
+\item{scglm_batch_size}{Number of features to process per scGLM batch.}
 
 \item{edf_flexible}{A logic variable. It is used for accelerating for spatial model if k is large in 'mu_formula'. Default is FALSE.}
 
@@ -119,7 +132,7 @@ will be returned, FALSE otherwise. Default is FALSE.}
 A list with the components:
 \describe{
   \item{\code{new_count}}{A matrix of the new simulated count (expression) matrix.}
-  \item{\code{new_covariate}}{A data.frame of the new covariate matrix.}
+\item{\code{new_covariate}}{A data.frame of the covariates used for simulation. If \code{ncell} is unchanged, this contains the original covariates.}
   \item{\code{model_aic}}{The model AIC.}
   \item{\code{marginal_list}}{A list of marginal regression models if return_model = TRUE.}
   \item{\code{corr_list}}{A list of correlation models (conditional copulas) if return_model = TRUE.}

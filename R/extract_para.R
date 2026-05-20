@@ -91,6 +91,12 @@ extract_para <-  function(sce,
   }
   
   count_mat <- SummarizedExperiment::assay(sce, assay_use)
+  predict_cache <- .scdesign3_prepare_predict_cache(
+    marginal_list = marginal_list,
+    qc_gene_idx = qc_gene_idx,
+    new_covariate = new_covariate,
+    removed_cell_list = removed_cell_list
+  )
   
   mat_function <-function(x, y) {
     fit <- marginal_list[[x]]
@@ -140,14 +146,71 @@ extract_para <-  function(sce,
       }
     }
 
-    if (methods::is(fit, "gamlss")) {
+    if (.scdesign3_is_categorical_dist(fit)) {
+      mean_vec <- .scdesign3_predict_categorical_cached(
+        fit,
+        predict_cache = predict_cache,
+        what = "mu"
+      )
+      if (is.null(mean_vec)) {
+        mean_vec <- .scdesign3_predict_categorical_dist(
+          fit,
+          newdata = new_covariate,
+          what = "mu"
+        )
+      }
+      if (y == "poisson" | y == "binomial") {
+        theta_vec <- rep(1, length(mean_vec))
+      } else if (y == "zip") {
+        theta_vec <- rep(NA, length(mean_vec))
+        zero_vec <- .scdesign3_predict_categorical_cached(
+          fit,
+          predict_cache = predict_cache,
+          what = "sigma"
+        )
+        if (is.null(zero_vec)) {
+          zero_vec <- .scdesign3_predict_categorical_dist(
+            fit,
+            newdata = new_covariate,
+            what = "sigma"
+          )
+        }
+      } else {
+        theta_vec <- .scdesign3_predict_categorical_cached(
+          fit,
+          predict_cache = predict_cache,
+          what = "sigma"
+        )
+        if (is.null(theta_vec)) {
+          theta_vec <- .scdesign3_predict_categorical_dist(
+            fit,
+            newdata = new_covariate,
+            what = "sigma"
+          )
+        }
+        if (y == "zinb") {
+          zero_vec <- .scdesign3_predict_categorical_cached(
+            fit,
+            predict_cache = predict_cache,
+            what = "nu"
+          )
+          if (is.null(zero_vec)) {
+            zero_vec <- .scdesign3_predict_categorical_dist(
+              fit,
+              newdata = new_covariate,
+              what = "nu"
+            )
+          }
+        }
+      }
+    } else if (methods::is(fit, "gamlss")) {
       mean_vec <-
         stats::predict(fit,
                        type = "response",
                        what = "mu",
                        newdata = new_covariate, data = data)
       if (y == "poisson" | y == "binomial") {
-        theta_vec <- rep(NA, total_cells)
+        theta_vec <- rep(1, total_cells)
       } else if (y == "gaussian") {
         theta_vec = stats::predict(fit,
                                    type = "response",
@@ -191,7 +254,7 @@ extract_para <-  function(sce,
 
         mean_vec <- stats::predict(fit, type = "response")
         if (y == "poisson" | y == "binomial") {
-          theta_vec <- rep(NA,  total_cells)
+          theta_vec <- rep(1,  total_cells)
         } else if (y == "gaussian") {
           theta_vec <- rep(sqrt(fit$sig2), total_cells) # this thete_vec is used for sigma_vec
         } else if (y == "nb") {
@@ -207,15 +270,15 @@ extract_para <-  function(sce,
         }
 
 
-        mean_vec <-
-          stats::predict(fit, type = "response", newdata = new_covariate)
+        mean_vec <- .scdesign3_predict_mgcv_cached(fit, predict_cache)
+        if (is.null(mean_vec)) {
+          mean_vec <-
+            stats::predict(fit, type = "response", newdata = new_covariate)
+        }
         if (y == "poisson" | y == "binomial") {
-          theta_vec <- rep(NA, total_cells)
+          theta_vec <- rep(1, total_cells)
         } else if (y == "gaussian") {
-          theta_vec = stats::predict(fit,
-                                     type = "response",
-                                     what = "sigma",
-                                     newdata = new_covariate) # this thete_vec is used for sigma_vec
+          theta_vec <- rep(sqrt(fit$sig2), total_cells) # this thete_vec is used for sigma_vec
         } else if (y == "nb") {
           theta <- fit$family$getTheta(TRUE)
           theta_vec <- 1/rep(theta, total_cells)
@@ -315,4 +378,119 @@ extract_para <-  function(sce,
     sigma_mat = sigma_mat,
     zero_mat = zero_mat
   ))
+}
+
+.scdesign3_prepare_predict_cache <- function(marginal_list,
+                                             qc_gene_idx,
+                                             new_covariate,
+                                             removed_cell_list) {
+  if (is.null(new_covariate) || length(qc_gene_idx) == 0) {
+    return(NULL)
+  }
+
+  has_removed_cells <- vapply(
+    removed_cell_list[qc_gene_idx],
+    function(x) length(x) > 0 && !all(is.na(x)),
+    logical(1)
+  )
+  if (any(has_removed_cells)) {
+    return(NULL)
+  }
+
+  out <- list()
+  is_categorical <- vapply(
+    marginal_list[qc_gene_idx],
+    .scdesign3_is_categorical_dist,
+    logical(1)
+  )
+  if (any(is_categorical)) {
+    first_fit <- marginal_list[[qc_gene_idx[which(is_categorical)[1]]]]
+    categorical_cache <- tryCatch({
+      x <- .scdesign3_categorical_predict_matrix(first_fit, new_covariate)
+      design_signatures <- .scdesign3_model_matrix_signature(x)
+      group_index <- match(design_signatures, first_fit$shared$group_signatures)
+      if (anyNA(group_index)) {
+        NULL
+      } else {
+        list(
+          group_index = group_index,
+          group_signatures = first_fit$shared$group_signatures,
+          design_names = first_fit$shared$design_names,
+          row_names = rownames(new_covariate)
+        )
+      }
+    }, error = function(e) NULL)
+    if (!is.null(categorical_cache)) {
+      out$categorical <- categorical_cache
+    }
+  }
+
+  is_mgcv_fit <- vapply(
+    marginal_list[qc_gene_idx],
+    .scdesign3_is_mgcv_fit,
+    logical(1)
+  )
+  if (!any(is_mgcv_fit)) {
+    return(if (length(out) == 0L) NULL else out)
+  }
+
+  first_fit <- marginal_list[[qc_gene_idx[which(is_mgcv_fit)[1]]]]
+  lpmatrix <- tryCatch(
+    stats::predict(first_fit, type = "lpmatrix", newdata = new_covariate),
+    error = function(e) NULL
+  )
+  if (is.null(lpmatrix) || is.null(colnames(lpmatrix))) {
+    return(if (length(out) == 0L) NULL else out)
+  }
+
+  out$lpmatrix <- lpmatrix
+  out$row_names <- rownames(new_covariate)
+  out
+}
+
+.scdesign3_is_mgcv_fit <- function(fit) {
+  methods::is(fit, "gam") && !methods::is(fit, "gamlss")
+}
+
+.scdesign3_predict_mgcv_cached <- function(fit, predict_cache) {
+  if (is.null(predict_cache) || !.scdesign3_is_mgcv_fit(fit)) {
+    return(NULL)
+  }
+
+  beta <- stats::coef(fit)
+  lpmatrix <- predict_cache$lpmatrix
+  if (is.null(names(beta)) || !all(names(beta) %in% colnames(lpmatrix))) {
+    return(NULL)
+  }
+
+  eta <- as.vector(lpmatrix[, names(beta), drop = FALSE] %*% beta)
+  mean_vec <- fit$family$linkinv(eta)
+  names(mean_vec) <- predict_cache$row_names
+  mean_vec
+}
+
+.scdesign3_predict_categorical_cached <- function(fit, predict_cache, what = c("mu", "sigma", "nu", "size")) {
+  what <- match.arg(what)
+  cache <- if (!is.null(predict_cache)) predict_cache$categorical else NULL
+  if (is.null(cache) || !.scdesign3_is_categorical_dist(fit)) {
+    return(NULL)
+  }
+  if (!identical(cache$group_signatures, fit$shared$group_signatures) ||
+      !identical(cache$design_names, fit$shared$design_names)) {
+    return(NULL)
+  }
+  values <- switch(
+    what,
+    mu = fit$mu_by_group,
+    sigma = fit$sigma_by_group,
+    nu = fit$nu_by_group,
+    size = 1 / pmax(fit$sigma_by_group, .Machine$double.eps)
+  )
+  if (is.null(values)) {
+    out <- rep(if (identical(what, "nu")) 0 else NA_real_, length(cache$group_index))
+  } else {
+    out <- as.numeric(values[cache$group_index])
+  }
+  names(out) <- cache$row_names
+  out
 }

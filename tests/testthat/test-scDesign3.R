@@ -24,6 +24,13 @@ test_that("Run scDesign3", {
     ncell = 10000
   )
 
+  expect_named(
+    my_data,
+    c("count_mat", "dat", "new_covariate", "newCovariate", "filtered_gene")
+  )
+  expect_identical(my_data$new_covariate, my_data$newCovariate)
+  expect_true(is.data.frame(my_data$new_covariate))
+
   my_marginal1 <- fit_marginal(
     data = my_data,
     mu_formula = "1",
@@ -76,6 +83,7 @@ test_that("Run scDesign3", {
     n_cores = 2,
     input_data = my_data$dat
   )
+  expect_true("quantile_mat" %in% names(my_quantile_mat))
   
   my_copula1 <- fit_copula(
     sce = example_sce,
@@ -163,6 +171,18 @@ test_that("Run scDesign3", {
     n_rep = 2
   )
 
+  expect_named(
+    my_simu,
+    c("new_count", "new_covariate", "model_aic", "model_bic", "marginal_list", "corr_list")
+  )
+  expect_true(is.list(my_simu$new_count))
+  expect_length(my_simu$new_count, 2)
+  expect_true(is.data.frame(my_simu$new_covariate))
+  expect_true(all(c("aic.marginal", "aic.copula", "aic.total") %in% names(my_simu$model_aic)))
+  expect_true(all(c("bic.marginal", "bic.copula", "bic.total") %in% names(my_simu$model_bic)))
+  expect_false(is.null(my_simu$corr_list))
+  expect_false(is.null(my_simu$marginal_list))
+
   # my_simu2 <- scdesign3(
   #   sce = example_sce,
   #   assay_use = "counts",
@@ -184,3 +204,25 @@ test_that("Run scDesign3", {
   # )
 })
 
+test_that("scdesign3 validates empirical quantile cell-count compatibility", {
+  data(example_sce)
+
+  expect_error(
+    scdesign3(
+      sce = example_sce,
+      assay_use = "counts",
+      celltype = "cell_type",
+      pseudotime = "pseudotime",
+      spatial = NULL,
+      other_covariates = NULL,
+      mu_formula = "1",
+      sigma_formula = "1",
+      family_use = "nb",
+      n_cores = 1,
+      corr_formula = "cell_type",
+      empirical_quantile = TRUE,
+      ncell = 1000
+    ),
+    "empirical_quantile = TRUE only works"
+  )
+})

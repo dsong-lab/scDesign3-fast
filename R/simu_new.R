@@ -117,200 +117,11 @@ simu_new <- function(sce,
   }
   
   qc_gene_idx <- which(!rownames(sce) %in% filtered_gene)
+  qc_gene_names <- rownames(sce)[qc_gene_idx]
   if(length(family_use) != 1){
     family_use <- family_use[qc_gene_idx]
-  }
- 
-    if(!is.null(quantile_mat)) {
-      message("Multivariate quantile matrix is provided")
-      
-      newmvn_full <- matrix(NA, nrow = dim(quantile_mat)[1], ncol = dim(sce)[1])
-      rownames(newmvn_full) <- rownames(quantile_mat)
-      colnames(newmvn_full) <- rownames(sce)
-      newmvn_full[rownames(quantile_mat), colnames(quantile_mat)] <- quantile_mat
-      quantile_mat <- as.matrix(newmvn_full)
-      
-      
-    } else {
-      message("Use Copula to sample a multivariate quantile matrix")
-      
-      group_index <- unique(input_data$corr_group)
-      corr_group <- as.data.frame(input_data$corr_group)
-      colnames(corr_group) <- "corr_group"
-      ngene <- length(qc_gene_idx)
-      if (is.null(new_covariate)) {
-        new_corr_group <- NULL
-      } else{
-        new_corr_group <- as.data.frame(new_covariate$corr_group)
-        colnames(new_corr_group) <- "corr_group"
-      }
-      ind <- group_index[1] == "ind"
-      newmvn.list <-
-        lapply(group_index, function(x,
-                                     sce,
-                                     corr_group,
-                                     new_corr_group,
-                                     ind,
-                                     n_cores,
-                                     copula_list) {
-          message(paste0("Sample Copula group ", x, " starts"))
-          curr_index <- which(corr_group[, 1] == x)
-          if (is.null(new_covariate)) {
-            curr_ncell <- length(curr_index)
-            curr_ncell_idx <- curr_index
-          } else{
-            curr_ncell <- length(which(new_corr_group[, 1] == x))
-            curr_ncell_idx <-which(new_corr_group[, 1] == x)
-            #paste0("Cell", which(new_corr_group[, 1] == x))
-          }
-          cor.mat <- copula_list[[x]]
-          
-          if(curr_ncell == 0) {
-            new_mvu <- NULL
-          } else {
-            if (methods::is(cor.mat, "matrix") | methods::is(cor.mat, "dsCMatrix")) {
-              #message(paste0("Group ", group_index, " Start"))
-              
-              #message("Sample MVN")
-              #sample from mvn for important genes only
-              corr_gene_idx <- apply(cor.mat, 2, function(x) length(which(x < 1e-5)) != length(x)-1)
-              corr_gene <- colnames(cor.mat)[which(corr_gene_idx)]
-              if(length(corr_gene)!=0) {
-                new_mvn_important <- sampleMVN(n = curr_ncell,
-                                               Sigma = cor.mat[corr_gene, corr_gene],
-                                               n_cores = n_cores,
-                                               fastmvn = fastmvn)
-              
-              colnames(new_mvn_important) <- corr_gene} else {
-                new_mvn_important <- NULL
-              }
-              #message("MVN Sampling End")
-              ind_gene <- colnames(cor.mat)[which(corr_gene_idx==FALSE)]
-              if(length(ind_gene) > 0){
-                new_mvn_non_important <- lapply(ind_gene, function(x) return(stats::rnorm(n = curr_ncell)))
-                new_mvn_non_important_mat <- do.call("cbind",new_mvn_non_important)
-                colnames(new_mvn_non_important_mat) <- ind_gene
-                
-                mvnrvq <- apply(new_mvn_non_important_mat, 2, stats::pnorm)
-                new_mvu <- cbind(new_mvn_important, mvnrvq)
-                new_mvu <- new_mvu[,colnames(cor.mat)]
-              }else{
-                new_mvu <- new_mvn_important
-              }
-
-              rownames(new_mvu) <- curr_ncell_idx
-            } else if (methods::is(cor.mat, "vinecop")) {
-              new_mvu <- matrix(0, nrow = curr_ncell, ncol = ngene)
-              #message("Sampling Vine Copula Starts")
-              mvu <- rvinecopulib::rvinecop(
-                curr_ncell,
-                vine = cor.mat,
-                cores = n_cores,
-                qrng = TRUE
-              )
-              new_mvu[, which(important_feature)] <- mvu
-              if(length(which(important_feature)) != ngene){
-                cor.mat <- diag(rep(1, length(which(!important_feature))))
-                mvu2 <- sampleMVN(n = curr_ncell,
-                                  Sigma = cor.mat,
-                                  n_cores = n_cores,
-                                  fastmvn = fastmvn)
-                new_mvu[, which(!important_feature)] <- mvu2
-              }
-              #message("Sampling Vine Copula Ends")
-              rownames(new_mvu) <- curr_ncell_idx
-            } else if (ind) {
-              "Use independent copula (random Unif)."
-              new_mvu <-
-                matrix(data = stats::runif(curr_ncell * ngene),
-                       nrow = curr_ncell)
-              rownames(new_mvu) <- curr_ncell_idx
-            } else{
-              stop("Copula must be one from 'vine' or 'gaussian', or assume gene-gene is independent")
-            }
-          }
-          return(
-            list(
-              new_mvu = new_mvu
-            )
-          )
-        }, sce = sce, ind = ind, n_cores = n_cores, corr_group = corr_group, new_corr_group = new_corr_group, copula_list = copula_list)
-      
-      newmvn <-
-        do.call(rbind, lapply(newmvn.list, function(x)
-          x$new_mvu))
-      newmvn[as.numeric(rownames(newmvn)),] <- newmvn
-      rownames(newmvn) <- as.character(1:dim(newmvn)[1])
-      colnames(newmvn) <- rownames(sce)[qc_gene_idx]
-      newmvn_full <- matrix(NA, nrow = dim(newmvn)[1], ncol = dim(sce)[1])
-      rownames(newmvn_full) <- rownames(newmvn)
-      colnames(newmvn_full) <- rownames(sce)
-      newmvn_full[rownames(newmvn), colnames(newmvn)] <- newmvn
-      quantile_mat <- as.matrix(newmvn_full)
-    }
-    
-    mat_function <- function(x, y) {
-      
-      idx <- which(mean_mat[,x] !=0)
-      para_mat <- cbind(mean_mat[idx, x], sigma_mat[idx, x], quantile_mat[idx, x], zero_mat[idx, x])
-      
-      if (y == "binomial") {
-        qfvec <- stats::qbinom(p = para_mat[, 3], prob = para_mat[, 1], size = 1)
-      } else if (y == "poisson") {
-        
-        qfvec <- stats::qpois(p = para_mat[, 3], lambda = para_mat[, 1])
-      } else if (y == "gaussian") {
-        qfvec <-
-          gamlss.dist::qNO(p = para_mat[, 3],
-                           mu = para_mat[, 1],
-                           sigma = abs(para_mat[, 2]))
-      } else if (y == "nb") {
-        qfvec <-
-          gamlss.dist::qNBI(p = para_mat[, 3],
-                            mu = para_mat[, 1],
-                            sigma = para_mat[, 2])
-      } else if (y == "zip") {
-        qfvec <-
-          gamlss.dist::qZIP(p = para_mat[, 3],
-                            mu = para_mat[, 1],
-                            sigma = ifelse(para_mat[, 4] != 0, para_mat[, 4],  2.2e-16))## Avoid zero zero-inflated prob
-      } else if (y == "zinb") {
-        
-        qfvec <-
-          gamlss.dist::qZINBI(p = para_mat[, 3],
-                              mu = para_mat[, 1],
-                              sigma = para_mat[, 2],
-                              nu = ifelse(para_mat[, 4] != 0, para_mat[, 4],  2.2e-16))
-      } else {
-        stop("Distribution of gamlss must be one of gaussian, poisson, nb, zip or zinb!")
-      }
-      
-      #message(paste0("Gene ", x , " End!"))
-      
-      r <- as.vector(qfvec)
-      if(length(r) < total_cells){
-        new_r <- rep(0, total_cells)
-        new_r[idx] <- r
-        names(new_r) <- cell_names
-        r <- new_r
-      }
-      r
-    }
-
-  
-
-
-  ## New count
-  paraFunc <- parallel::mcmapply
-  if(.Platform$OS.type == "windows"){
-    BPPARAM <- BiocParallel::SnowParam()
-    parallelization <- "bpmapply"
-  }
-  if(parallelization == "bpmapply"){
-    paraFunc <- BiocParallel::bpmapply
-  }
-  if(parallelization == "pbmcmapply"){
-    paraFunc <- pbmcapply::pbmcmapply
+  } else {
+    family_use <- rep(family_use, length(qc_gene_idx))
   }
 
   if(is.null(new_covariate)){
@@ -320,20 +131,149 @@ simu_new <- function(sce,
     total_cells <- dim(new_covariate)[1]
     cell_names <- rownames(new_covariate)
   }
-  if(parallelization == "bpmapply"){
-    if(class(BPPARAM)[1] != "SerialParam"){
-    #if(!is(BPPARAM, "SerialParam")){
-      BPPARAM$workers <- n_cores
+
+  if(!is.null(quantile_mat)) {
+    message("Multivariate quantile matrix is provided")
+    quantile_mat <- .scdesign3_align_quantile_matrix(
+      quantile_mat = quantile_mat,
+      cell_names = cell_names,
+      gene_names = qc_gene_names
+    )
+  } else {
+    message("Use Copula to sample a multivariate quantile matrix")
+      
+    group_index <- unique(input_data$corr_group)
+    corr_group <- as.data.frame(input_data$corr_group)
+    colnames(corr_group) <- "corr_group"
+    ngene <- length(qc_gene_idx)
+    if (is.null(new_covariate)) {
+      new_corr_group <- NULL
+    } else{
+      new_corr_group <- as.data.frame(new_covariate$corr_group)
+      colnames(new_corr_group) <- "corr_group"
     }
-    mat <-  paraFunc(mat_function, x = seq_len(dim(sce)[1])[qc_gene_idx], y = family_use, SIMPLIFY = TRUE, BPPARAM = BPPARAM)
-  }else{
-    mat <- paraFunc(mat_function, x = seq_len(dim(sce)[1])[qc_gene_idx], y = family_use, SIMPLIFY = TRUE
-                  , mc.cores = n_cores
-                   )
- }
-  new_count <- mat #simplify2array(mat)
-  rownames(new_count) <- cell_names
-  colnames(new_count) <- rownames(sce)[qc_gene_idx]
+    ind <- group_index[1] == "ind"
+    newmvn.list <-
+      lapply(group_index, function(x,
+                                   sce,
+                                   corr_group,
+                                   new_corr_group,
+                                   ind,
+                                   n_cores,
+                                   copula_list) {
+        message(paste0("Sample Copula group ", x, " starts"))
+        curr_index <- which(corr_group[, 1] == x)
+        if (is.null(new_covariate)) {
+          curr_ncell <- length(curr_index)
+          curr_ncell_idx <- curr_index
+        } else{
+          curr_ncell <- length(which(new_corr_group[, 1] == x))
+          curr_ncell_idx <-which(new_corr_group[, 1] == x)
+          #paste0("Cell", which(new_corr_group[, 1] == x))
+        }
+        cor.mat <- copula_list[[x]]
+        
+        if(curr_ncell == 0) {
+          new_mvu <- NULL
+        } else {
+          if (methods::is(cor.mat, "matrix") | methods::is(cor.mat, "dsCMatrix")) {
+            #message(paste0("Group ", group_index, " Start"))
+            
+            #message("Sample MVN")
+            #sample from mvn for important genes only
+            corr_gene_idx <- apply(cor.mat, 2, function(x) length(which(x < 1e-5)) != length(x)-1)
+            corr_gene <- colnames(cor.mat)[which(corr_gene_idx)]
+            if(length(corr_gene)!=0) {
+              new_mvn_important <- sampleMVN(n = curr_ncell,
+                                             Sigma = cor.mat[corr_gene, corr_gene],
+                                             n_cores = n_cores,
+                                             fastmvn = fastmvn)
+            
+            colnames(new_mvn_important) <- corr_gene} else {
+              new_mvn_important <- NULL
+            }
+            #message("MVN Sampling End")
+            ind_gene <- colnames(cor.mat)[which(corr_gene_idx==FALSE)]
+            if(length(ind_gene) > 0){
+              new_mvn_non_important_mat <- matrix(
+                stats::rnorm(curr_ncell * length(ind_gene)),
+                nrow = curr_ncell,
+                ncol = length(ind_gene)
+              )
+              colnames(new_mvn_non_important_mat) <- ind_gene
+              
+              mvnrvq <- matrix(
+                stats::pnorm(new_mvn_non_important_mat),
+                nrow = nrow(new_mvn_non_important_mat),
+                ncol = ncol(new_mvn_non_important_mat),
+                dimnames = dimnames(new_mvn_non_important_mat)
+              )
+              new_mvu <- cbind(new_mvn_important, mvnrvq)
+              new_mvu <- new_mvu[,colnames(cor.mat)]
+            }else{
+              new_mvu <- new_mvn_important
+            }
+
+            rownames(new_mvu) <- curr_ncell_idx
+          } else if (methods::is(cor.mat, "vinecop")) {
+            new_mvu <- matrix(0, nrow = curr_ncell, ncol = ngene)
+            #message("Sampling Vine Copula Starts")
+            mvu <- rvinecopulib::rvinecop(
+              curr_ncell,
+              vine = cor.mat,
+              cores = n_cores,
+              qrng = TRUE
+            )
+            new_mvu[, which(important_feature)] <- mvu
+            if(length(which(important_feature)) != ngene){
+              cor.mat <- diag(rep(1, length(which(!important_feature))))
+              mvu2 <- sampleMVN(n = curr_ncell,
+                                Sigma = cor.mat,
+                                n_cores = n_cores,
+                                fastmvn = fastmvn)
+              new_mvu[, which(!important_feature)] <- mvu2
+            }
+            #message("Sampling Vine Copula Ends")
+            rownames(new_mvu) <- curr_ncell_idx
+          } else if (ind) {
+            "Use independent copula (random Unif)."
+            new_mvu <-
+              matrix(data = stats::runif(curr_ncell * ngene),
+                     nrow = curr_ncell)
+            rownames(new_mvu) <- curr_ncell_idx
+          } else{
+            stop("Copula must be one from 'vine' or 'gaussian', or assume gene-gene is independent")
+          }
+        }
+        return(
+          list(
+            new_mvu = new_mvu
+          )
+        )
+      }, sce = sce, ind = ind, n_cores = n_cores, corr_group = corr_group, new_corr_group = new_corr_group, copula_list = copula_list)
+    
+    newmvn <-
+      do.call(rbind, lapply(newmvn.list, function(x)
+        x$new_mvu))
+    newmvn[as.numeric(rownames(newmvn)),] <- newmvn
+    rownames(newmvn) <- as.character(seq_len(dim(newmvn)[1]))
+    colnames(newmvn) <- qc_gene_names
+    quantile_mat <- newmvn
+  }
+
+  ## New count
+  new_count <- .scdesign3_quantile_to_counts(
+    mean_mat = mean_mat,
+    sigma_mat = sigma_mat,
+    zero_mat = zero_mat,
+    quantile_mat = quantile_mat,
+    gene_idx = qc_gene_idx,
+    family_use = family_use,
+    cell_names = cell_names,
+    n_cores = n_cores,
+    parallelization = parallelization,
+    BPPARAM = BPPARAM
+  )
 
   if(length(qc_gene_idx) < dim(sce)[1]){
     temp_count <- matrix(0, total_cells, dim(sce)[1])
@@ -363,4 +303,194 @@ simu_new <- function(sce,
   }
 
   return(new_count)
+}
+
+.scdesign3_align_quantile_matrix <- function(quantile_mat, cell_names, gene_names) {
+  quantile_mat <- as.matrix(quantile_mat)
+  out <- matrix(
+    NA_real_,
+    nrow = length(cell_names),
+    ncol = length(gene_names),
+    dimnames = list(cell_names, gene_names)
+  )
+
+  if (is.null(rownames(quantile_mat))) {
+    row_to <- seq_len(min(nrow(out), nrow(quantile_mat)))
+    row_from <- row_to
+  } else {
+    row_match <- match(rownames(quantile_mat), cell_names)
+    if (all(is.na(row_match))) {
+      row_to <- seq_len(min(nrow(out), nrow(quantile_mat)))
+      row_from <- row_to
+    } else {
+      keep <- !is.na(row_match)
+      row_to <- row_match[keep]
+      row_from <- which(keep)
+    }
+  }
+
+  if (is.null(colnames(quantile_mat))) {
+    col_to <- seq_len(min(ncol(out), ncol(quantile_mat)))
+    col_from <- col_to
+  } else {
+    col_match <- match(colnames(quantile_mat), gene_names)
+    if (all(is.na(col_match))) {
+      col_to <- seq_len(min(ncol(out), ncol(quantile_mat)))
+      col_from <- col_to
+    } else {
+      keep <- !is.na(col_match)
+      col_to <- col_match[keep]
+      col_from <- which(keep)
+    }
+  }
+
+  if (length(row_to) > 0L && length(col_to) > 0L) {
+    out[row_to, col_to] <- quantile_mat[row_from, col_from, drop = FALSE]
+  }
+  out
+}
+
+.scdesign3_quantile_to_counts <- function(mean_mat,
+                                          sigma_mat,
+                                          zero_mat,
+                                          quantile_mat,
+                                          gene_idx,
+                                          family_use,
+                                          cell_names,
+                                          n_cores,
+                                          parallelization,
+                                          BPPARAM,
+                                          block_size = 256L) {
+  block_size <- as.integer(block_size[1L])
+  if (!is.finite(block_size) || block_size < 1L) {
+    block_size <- 256L
+  }
+  n_cores <- as.integer(n_cores[1L])
+  if (!is.finite(n_cores) || n_cores < 1L) {
+    n_cores <- 1L
+  }
+  if (is.null(parallelization) || !nzchar(parallelization[1L])) {
+    parallelization <- "mcmapply"
+  }
+  if (length(gene_idx) == 0L) {
+    return(matrix(0, nrow = length(cell_names), ncol = 0L, dimnames = list(cell_names, NULL)))
+  }
+  gene_pos <- seq_along(gene_idx)
+  blocks <- split(gene_pos, ceiling(gene_pos / block_size))
+
+  block_fun <- function(pos) {
+    genes <- gene_idx[pos]
+    q <- as.matrix(quantile_mat[, pos, drop = FALSE])
+    mu <- as.matrix(mean_mat[, genes, drop = FALSE])
+    fam <- family_use[pos]
+
+    out <- matrix(0, nrow = nrow(q), ncol = ncol(q))
+    for (family_i in unique(fam)) {
+      cols <- which(fam == family_i)
+      sigma <- if (family_i %in% c("gaussian", "nb", "zinb")) {
+        as.matrix(sigma_mat[, genes[cols], drop = FALSE])
+      } else {
+        NULL
+      }
+      zero <- if (family_i %in% c("zip", "zinb")) {
+        as.matrix(zero_mat[, genes[cols], drop = FALSE])
+      } else {
+        NULL
+      }
+      out[, cols] <- .scdesign3_qfamily_matrix(
+        y = family_i,
+        p = q[, cols, drop = FALSE],
+        mu = mu[, cols, drop = FALSE],
+        sigma = sigma,
+        zero = zero
+      )
+    }
+    out
+  }
+
+  if (.Platform$OS.type == "windows") {
+    BPPARAM <- BiocParallel::SnowParam()
+    parallelization <- "bpmapply"
+  }
+
+  if (parallelization != "bpmapply" && !(parallelization == "pbmcmapply" && n_cores > 1L) && n_cores <= 1L) {
+    out <- matrix(
+      0,
+      nrow = nrow(quantile_mat),
+      ncol = length(gene_idx),
+      dimnames = list(cell_names, colnames(mean_mat)[gene_idx])
+    )
+    for (pos in blocks) {
+      out[, pos] <- block_fun(pos)
+    }
+    return(out)
+  }
+
+  block_results <- if (parallelization == "bpmapply") {
+    if (is.null(BPPARAM)) {
+      BPPARAM <- BiocParallel::SerialParam()
+    }
+    if (!methods::is(BPPARAM, "SerialParam")) {
+      BPPARAM$workers <- n_cores
+    }
+    BiocParallel::bplapply(blocks, block_fun, BPPARAM = BPPARAM)
+  } else if (parallelization == "pbmcmapply" && requireNamespace("pbmcapply", quietly = TRUE)) {
+    pbmcapply::pbmclapply(blocks, block_fun, mc.cores = n_cores)
+  } else if (n_cores > 1L) {
+    parallel::mclapply(blocks, block_fun, mc.cores = n_cores)
+  } else {
+    lapply(blocks, block_fun)
+  }
+
+  out <- do.call(cbind, block_results)
+  rownames(out) <- cell_names
+  colnames(out) <- colnames(mean_mat)[gene_idx]
+  out
+}
+
+.scdesign3_qfamily_matrix <- function(y, p, mu, sigma, zero) {
+  nr <- nrow(p)
+  nc <- ncol(p)
+  p_vec <- as.vector(p)
+  mu_vec <- as.vector(mu)
+
+  if (y == "binomial") {
+    out <- stats::qbinom(p = p_vec, prob = mu_vec, size = 1)
+  } else if (y == "poisson") {
+    out <- stats::qpois(p = p_vec, lambda = mu_vec)
+  } else if (y == "gaussian") {
+    sigma_vec <- as.vector(sigma)
+    out <- gamlss.dist::qNO(p = p_vec, mu = mu_vec, sigma = abs(sigma_vec))
+  } else if (y == "nb") {
+    sigma_vec <- as.vector(sigma)
+    zero_mu <- is.na(mu_vec) | mu_vec <= 0
+    mu_safe <- mu_vec
+    sigma_safe <- sigma_vec
+    mu_safe[zero_mu] <- .Machine$double.eps
+    sigma_safe[!is.finite(sigma_safe) | sigma_safe <= 0] <- .Machine$double.eps
+    out <- gamlss.dist::qNBI(p = p_vec, mu = mu_safe, sigma = sigma_safe)
+    out[zero_mu] <- 0
+  } else if (y == "zip") {
+    zero_vec <- as.vector(zero)
+    out <- gamlss.dist::qZIP(
+      p = p_vec,
+      mu = mu_vec,
+      sigma = ifelse(zero_vec != 0, zero_vec, 2.2e-16)
+    )
+  } else if (y == "zinb") {
+    sigma_vec <- as.vector(sigma)
+    zero_vec <- as.vector(zero)
+    out <- gamlss.dist::qZINBI(
+      p = p_vec,
+      mu = mu_vec,
+      sigma = sigma_vec,
+      nu = ifelse(zero_vec != 0, zero_vec, 2.2e-16)
+    )
+  } else {
+    stop("Distribution of gamlss must be one of gaussian, poisson, nb, zip or zinb!")
+  }
+
+  out <- matrix(out, nrow = nr, ncol = nc)
+  out[is.na(mu) | mu == 0] <- 0
+  out
 }

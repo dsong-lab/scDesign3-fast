@@ -59,7 +59,7 @@ The default value for is "all" (a special string which means no filtering).}
 
 \item{if_sparse}{A logic variable. Only works for Gaussian copula (\code{family_set = "gaussian"}). If TRUE, a thresholding strategy will make the corr matrix sparse.}
 
-\item{correlation_function}{A string. If 'default', the function from \code{Rfast}; if 'coop', the function from \code{coop}, which calls BLAS.}
+\item{correlation_function}{A string. If 'default', use the package default correlation implementation; if 'coop', use the implementation from \code{coop}, which calls BLAS.}
 
 \item{n_cores}{An integer. The number of cores to use.}
 

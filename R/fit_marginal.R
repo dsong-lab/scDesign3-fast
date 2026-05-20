@@ -15,6 +15,16 @@
 #' and 'gaussian distribution' respectively.
 #' @param n_cores An integer. The number of cores to use.
 #' @param usebam A logic variable. If use \code{\link[mgcv]{bam}} for acceleration.
+#' @param use_scglm A string indicating whether to use the optional batched
+#' \code{scGLM} marginal backend. Must be one of \code{"auto"},
+#' \code{"always"}, or \code{"never"}. \code{"auto"} uses scGLM when installed
+#' and when the requested model is supported. For categorical shared designs,
+#' \code{"auto"} uses the scGLM categorical closed-form backend by default.
+#' Unsupported models fall back to the original per-feature mgcv/gamlss path.
+#' @param scglm_method A string selecting the scGLM matrix backend. Must be one
+#' of \code{"auto"}, \code{"categorical_closed_form"},
+#' \code{"categorical_irls"}, \code{"irls"}, or \code{"newton_stein"}.
+#' @param scglm_batch_size Number of features to process per scGLM batch.
 #' @param edf_flexible A logic variable. It uses simpler model to accelerate the marginal fitting with a mild loss of accuracy. If TRUE, the fitted regression model will use the fitted relationship between Gini coefficient and the effective degrees of freedom on a random selected gene sets. Default is FALSE.
 #' @param parallelization A string indicating the specific parallelization function to use.
 #' Must be one of 'mcmapply', 'bpmapply', or 'pbmcmapply', which corresponds to the parallelization function in the package
@@ -56,6 +66,9 @@ fit_marginal <- function(data,
                          family_use,
                          n_cores,
                          usebam = FALSE,
+                         use_scglm = c("auto", "always", "never"),
+                         scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
+                         scglm_batch_size = 256L,
                          edf_flexible = FALSE,
                          parallelization = "mcmapply",
                          BPPARAM = NULL,
@@ -66,6 +79,8 @@ fit_marginal <- function(data,
   dat_cov <- data$dat
   filtered_gene <- data$filtered_gene
   feature_names <- colnames(count_mat)
+  use_scglm <- match.arg(use_scglm)
+  scglm_method <- match.arg(scglm_method)
   
   
   # Extract K from mu formula
@@ -107,6 +122,28 @@ fit_marginal <- function(data,
   if(length(family_use) != length(feature_names)) {
     stop("The family_use must be either a single string or a vector with the same length as all features!")
   }
+
+  if (!isTRUE(edf_fitting)) {
+    scglm_fit <- .scdesign3_fit_marginal_scglm(
+      count_mat = count_mat,
+      dat_cov = dat_cov,
+      filtered_gene = filtered_gene,
+      feature_names = feature_names,
+      family_use = family_use,
+      mu_formula = mu_formula,
+      sigma_formula = sigma_formula,
+      predictor = predictor,
+      use_scglm = use_scglm,
+      scglm_method = scglm_method,
+      scglm_batch_size = scglm_batch_size,
+      n_cores = n_cores,
+      trace = trace,
+      filter_cells = filter_cells
+    )
+    if (!is.null(scglm_fit)) {
+      return(scglm_fit)
+    }
+  }
   
   
   fit_model_func <- function(gene,
@@ -117,6 +154,7 @@ fit_marginal <- function(data,
                              sigma_formula,
                              predictor,
                              count_mat,
+                             mgcv_cache = NULL,
                              edf=NULL
   ) {
     
@@ -206,7 +244,7 @@ fit_marginal <- function(data,
     
     
     ## Add gene expr
-    dat_use$gene <- count_mat[, gene]
+    dat_use$gene <- as.numeric(count_mat[, gene])
     
     ## For error/warning logging
     add_log <- function(function_name, type, message) {
@@ -283,7 +321,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "binomial", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "binomial",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -325,7 +369,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "poisson", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "poisson",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -364,7 +414,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <- fitfunc(formula = mgcv_formula, data = dat_use, family = "gaussian", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "gaussian",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -405,7 +461,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "nb", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "nb",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -445,7 +507,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "poisson", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "poisson",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -482,7 +550,13 @@ fit_marginal <- function(data,
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <- fitfunc(formula = mgcv_formula, data = dat_use, family = "nb", discrete = usebam)
+          res <- .scdesign3_fit_mgcv_cached(
+            formula = mgcv_formula,
+            data = dat_use,
+            family = "nb",
+            usebam = usebam,
+            mgcv_cache = mgcv_cache
+          )
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -592,6 +666,22 @@ fit_marginal <- function(data,
   }
   # If not using edf flexible fitting
   if(edf_fitting==FALSE){
+    mgcv_cache <- .scdesign3_prepare_mgcv_cache(
+      dat_use = dat_cov,
+      predictor = predictor,
+      mu_formula = mu_formula,
+      sigma_formula = sigma_formula,
+      family_use = family_use,
+      usebam = usebam,
+      filter_cells = filter_cells
+    )
+    gamlss_cache_opt <- NULL
+    if (.scdesign3_needs_gamlss_spline_cache(mu_formula, sigma_formula, family_use)) {
+      gamlss_cache_opt <- options(
+        .scdesign3_gamlss_cache_env = new.env(parent = emptyenv())
+      )
+      on.exit(options(gamlss_cache_opt), add = TRUE)
+    }
     if(parallelization == "bpmapply"){
       if(class(BPPARAM)[1] != "SerialParam"){
         BPPARAM$workers <- n_cores
@@ -603,7 +693,8 @@ fit_marginal <- function(data,
                                                              mu_formula = mu_formula,
                                                              sigma_formula = sigma_formula,
                                                              predictor = predictor,
-                                                             count_mat = count_mat),
+                                                             count_mat = count_mat,
+                                                             mgcv_cache = mgcv_cache),
                                              SIMPLIFY = FALSE, BPPARAM = BPPARAM))
     }else{
       model_fit <-  suppressMessages(paraFunc(fit_model_func, gene = feature_names,
@@ -614,7 +705,8 @@ fit_marginal <- function(data,
                                                               mu_formula = mu_formula,
                                                               sigma_formula = sigma_formula,
                                                               predictor = predictor,
-                                                              count_mat = count_mat),
+                                                              count_mat = count_mat,
+                                                              mgcv_cache = mgcv_cache),
                                               SIMPLIFY = FALSE))
     }
   }else{ 
@@ -772,4 +864,147 @@ gini <- function(x, weights=rep(1,length=length(x))){
   n <- length(nu)
   nu <- nu / nu[n]
   sum(nu[-1]*p[-n]) - sum(nu[-n]*p[-1])
+}
+
+.scdesign3_prepare_mgcv_cache <- function(dat_use,
+                                          predictor,
+                                          mu_formula,
+                                          sigma_formula,
+                                          family_use,
+                                          usebam,
+                                          filter_cells = FALSE) {
+  if (isTRUE(filter_cells)) {
+    return(NULL)
+  }
+  mu_mgcvform <- grepl("s\\(", mu_formula) | grepl("te\\(", mu_formula)
+  usebam_eff <- isTRUE(usebam) && isTRUE(mu_mgcvform)
+  mgcv_formula <- stats::formula(paste0(predictor, "~", mu_formula))
+  formula_label <- paste(deparse(mgcv_formula), collapse = "\n")
+
+  families <- unique(vapply(family_use, .scdesign3_mgcv_family_key, character(1)))
+  if ("nb" %in% families && !.scdesign3_is_intercept_only_formula(sigma_formula)) {
+    # In scDesign3 NB-GAMs with a non-constant sigma formula, the per-gene
+    # gamlss::gamlss(NBI) fit dominates runtime. Caching mgcv::nb() setup only
+    # affects the smaller mean-GAM fit and can add fork/copy overhead.
+    families <- setdiff(families, "nb")
+  }
+  if (length(families) == 0L) {
+    return(NULL)
+  }
+  dat_template <- as.data.frame(dat_use)
+  cache <- vector("list", length(families))
+  names(cache) <- families
+
+  for (family_key in families) {
+    dat_template[[predictor]] <- .scdesign3_mgcv_placeholder_y(nrow(dat_template), family_key)
+    cache[[family_key]] <- tryCatch({
+      fitfunc <- if (usebam_eff) mgcv::bam else mgcv::gam
+      G <- fitfunc(
+        formula = mgcv_formula,
+        data = dat_template,
+        family = family_key,
+        discrete = usebam_eff,
+        fit = FALSE
+      )
+      list(
+        G = G,
+        family = family_key,
+        formula_label = formula_label,
+        usebam = usebam_eff,
+        nrow = nrow(dat_template),
+        response = predictor
+      )
+    }, error = function(e) {
+      NULL
+    })
+  }
+
+  cache[!vapply(cache, is.null, logical(1))]
+}
+
+.scdesign3_fit_mgcv_cached <- function(formula,
+                                       data,
+                                       family,
+                                       usebam,
+                                       mgcv_cache = NULL) {
+  family_key <- .scdesign3_mgcv_family_key(family)
+  usebam_eff <- isTRUE(usebam)
+  formula_label <- paste(deparse(formula), collapse = "\n")
+  cache <- if (!is.null(mgcv_cache)) mgcv_cache[[family_key]] else NULL
+
+  if (!is.null(cache) &&
+      identical(cache$formula_label, formula_label) &&
+      identical(cache$usebam, usebam_eff) &&
+      identical(cache$nrow, nrow(data)) &&
+      cache$response %in% names(data)) {
+    fit <- tryCatch({
+      G <- cache$G
+      G$y <- data[[cache$response]]
+      if (!is.null(G$mf) && cache$response %in% names(G$mf)) {
+        G$mf[[cache$response]] <- data[[cache$response]]
+      }
+      G$family <- .scdesign3_mgcv_family_object(cache$family)
+      if (isTRUE(cache$usebam)) {
+        mgcv::bam(G = G)
+      } else {
+        mgcv::gam(G = G)
+      }
+    }, error = function(e) {
+      NULL
+    })
+    if (!is.null(fit)) {
+      return(fit)
+    }
+  }
+
+  fitfunc <- if (usebam_eff) mgcv::bam else mgcv::gam
+  fitfunc(formula = formula, data = data, family = family_key, discrete = usebam_eff)
+}
+
+.scdesign3_mgcv_family_key <- function(family) {
+  family <- as.character(family)[1L]
+  switch(
+    family,
+    binomial = "binomial",
+    poisson = "poisson",
+    gaussian = "gaussian",
+    nb = "nb",
+    zip = "poisson",
+    zinb = "nb",
+    family
+  )
+}
+
+.scdesign3_mgcv_placeholder_y <- function(n, family) {
+  switch(
+    family,
+    binomial = rep(c(0, 1), length.out = n),
+    poisson = rep.int(1, n),
+    nb = rep.int(1, n),
+    gaussian = seq_len(n) / max(n, 1L),
+    rep.int(1, n)
+  )
+}
+
+.scdesign3_mgcv_family_object <- function(family) {
+  switch(
+    family,
+    binomial = stats::binomial(),
+    poisson = stats::poisson(),
+    gaussian = stats::gaussian(),
+    nb = mgcv::nb(),
+    family
+  )
+}
+
+.scdesign3_needs_gamlss_spline_cache <- function(mu_formula,
+                                                 sigma_formula,
+                                                 family_use) {
+  has_smooth <- grepl("s\\(", mu_formula) || grepl("te\\(", mu_formula) ||
+    grepl("s\\(", sigma_formula) || grepl("te\\(", sigma_formula)
+  if (!isTRUE(has_smooth)) {
+    return(FALSE)
+  }
+  any(family_use %in% c("zip", "zinb")) ||
+    !.scdesign3_is_intercept_only_formula(sigma_formula)
 }
