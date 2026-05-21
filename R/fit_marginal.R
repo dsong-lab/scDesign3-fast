@@ -32,6 +32,17 @@
 #' of \code{"auto"}, \code{"categorical_closed_form"},
 #' \code{"categorical_irls"}, \code{"irls"}, or \code{"newton_stein"}.
 #' @param scglm_batch_size Number of features to process per scGLM batch.
+#' @param scglm_lambda_grid Positive smoothing-parameter grid used by the
+#' scGLM shared penalized smooth backend for \code{s(..., fx = FALSE)} terms.
+#' @param scglm_lambda_criterion Criterion for selecting gene-specific
+#' smoothing parameters from \code{scglm_lambda_grid}. \code{"mgcv_default"}
+#' follows mgcv's default \code{method = "GCV.Cp"} behavior.
+#' @param scglm_mgcv_method mgcv smoothing-selection method to mimic when
+#' \code{scglm_lambda_criterion = "mgcv_default"}.
+#' @param scglm_gamma,scglm_scale Criterion controls passed to the scGLM
+#' penalized smooth backend.
+#' @param scglm_refine_lambda Whether to run a local refinement pass around the
+#' selected lambda grid values.
 #' @param edf_flexible A logic variable. It uses simpler model to accelerate the marginal fitting with a mild loss of accuracy. If TRUE, the fitted regression model will use the fitted relationship between Gini coefficient and the effective degrees of freedom on a random selected gene sets. Default is FALSE.
 #' @param parallelization A string indicating the specific parallelization function to use.
 #' Must be one of 'mcmapply', 'bpmapply', or 'pbmcmapply', which corresponds to the parallelization function in the package
@@ -77,6 +88,12 @@ fit_marginal <- function(data,
                          scglm_fit = c("approximate", "exact"),
                          scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
                          scglm_batch_size = 256L,
+                         scglm_lambda_grid = 10 ^ seq(-4, 4, length.out = 9L),
+                         scglm_lambda_criterion = c("mgcv_default", "ubre_aic", "gcv"),
+                         scglm_mgcv_method = "GCV.Cp",
+                         scglm_gamma = 1,
+                         scglm_scale = 0,
+                         scglm_refine_lambda = FALSE,
                          edf_flexible = FALSE,
                          parallelization = "mcmapply",
                          BPPARAM = NULL,
@@ -90,6 +107,7 @@ fit_marginal <- function(data,
   use_scglm <- match.arg(use_scglm)
   scglm_fit <- match.arg(scglm_fit)
   scglm_method <- match.arg(scglm_method)
+  scglm_lambda_criterion <- match.arg(scglm_lambda_criterion)
   
   
   # Extract K from mu formula
@@ -146,6 +164,12 @@ fit_marginal <- function(data,
       scglm_fit = scglm_fit,
       scglm_method = scglm_method,
       scglm_batch_size = scglm_batch_size,
+      scglm_lambda_grid = scglm_lambda_grid,
+      scglm_lambda_criterion = scglm_lambda_criterion,
+      scglm_mgcv_method = scglm_mgcv_method,
+      scglm_gamma = scglm_gamma,
+      scglm_scale = scglm_scale,
+      scglm_refine_lambda = scglm_refine_lambda,
       n_cores = n_cores,
       trace = trace,
       filter_cells = filter_cells

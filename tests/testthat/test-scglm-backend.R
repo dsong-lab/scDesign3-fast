@@ -76,7 +76,7 @@ test_that("scglm_fit controls exact versus approximate automatic dispatch", {
   )
 })
 
-test_that("fit_marginal auto avoids slow NB smooth scGLM path", {
+test_that("fit_marginal auto uses shared penalized smooths for NB free-lambda formulas", {
   skip_if_not_installed("scGLM")
   skip_if_not_installed("mgcv")
 
@@ -95,10 +95,14 @@ test_that("fit_marginal auto avoids slow NB smooth scGLM path", {
     sigma_formula = "1",
     family_use = "nb",
     n_cores = 1,
-    use_scglm = "auto"
+    use_scglm = "auto",
+    scglm_lambda_grid = 10 ^ seq(-2, 2, length.out = 3L)
   )
 
-  expect_false(inherits(fit[[1]]$fit, "scdesign3_scglm"))
+  expect_s3_class(fit[[1]]$fit, "scdesign3_scglm")
+  expect_identical(fit[[1]]$fit$backend, "scGLM::penalized_smooth")
+  expect_true(is.finite(fit[[1]]$fit$theta))
+  expect_true(is.finite(fit[[1]]$fit$lambda))
 })
 
 test_that("fit_marginal uses compressed categorical NBI backend for GAMLSS-style sigma models", {
@@ -371,12 +375,13 @@ test_that("shared fixed-smooth backend matches original mgcv path", {
   }
 })
 
-test_that("automatic penalized smooths fall back to original mgcv path", {
+test_that("automatic penalized smooths use shared scGLM lambda path", {
+  skip_if_not_installed("scGLM")
   skip_if_not_installed("mgcv")
 
   set.seed(107)
   n <- 60L
-  g <- 2L
+  g <- 3L
   dat <- data.frame(x = stats::runif(n))
   rownames(dat) <- paste0("cell", seq_len(n))
   mu <- exp(0.2 + sin(2 * pi * dat$x))
@@ -390,9 +395,15 @@ test_that("automatic penalized smooths fall back to original mgcv path", {
     sigma_formula = "1",
     family_use = "poisson",
     n_cores = 1,
-    use_scglm = "auto"
+    use_scglm = "auto",
+    scglm_lambda_grid = 10 ^ seq(-2, 2, length.out = 3L),
+    scglm_batch_size = 2L
   )
 
-  expect_s3_class(fit[[1]]$fit, "gam")
-  expect_false(inherits(fit[[1]]$fit, "scdesign3_scglm"))
+  expect_s3_class(fit[[1]]$fit, "scdesign3_scglm")
+  expect_identical(fit[[1]]$fit$backend, "scGLM::penalized_smooth")
+  expect_true(is.finite(fit[[1]]$fit$lambda))
+  pred <- stats::predict(fit[[1]]$fit, newdata = dat[1:5, , drop = FALSE], type = "response")
+  expect_length(pred, 5L)
+  expect_true(all(is.finite(pred)))
 })

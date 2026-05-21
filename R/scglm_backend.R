@@ -13,6 +13,12 @@ NULL
                                           scglm_fit,
                                           scglm_method,
                                           scglm_batch_size,
+                                          scglm_lambda_grid,
+                                          scglm_lambda_criterion,
+                                          scglm_mgcv_method,
+                                          scglm_gamma,
+                                          scglm_scale,
+                                          scglm_refine_lambda,
                                           n_cores,
                                           trace,
                                           filter_cells) {
@@ -65,6 +71,12 @@ NULL
     scglm_fit = scglm_fit,
     scglm_method = scglm_method,
     scglm_batch_size = scglm_batch_size,
+    scglm_lambda_grid = scglm_lambda_grid,
+    scglm_lambda_criterion = scglm_lambda_criterion,
+    scglm_mgcv_method = scglm_mgcv_method,
+    scglm_gamma = scglm_gamma,
+    scglm_scale = scglm_scale,
+    scglm_refine_lambda = scglm_refine_lambda,
     n_cores = n_cores,
     trace = trace
   )
@@ -381,6 +393,12 @@ NULL
                                                scglm_fit,
                                                scglm_method,
                                                scglm_batch_size,
+                                               scglm_lambda_grid,
+                                               scglm_lambda_criterion,
+                                               scglm_mgcv_method,
+                                               scglm_gamma,
+                                               scglm_scale,
+                                               scglm_refine_lambda,
                                                n_cores,
                                                trace) {
   scglm_fit <- match.arg(scglm_fit, c("approximate", "exact"))
@@ -398,9 +416,6 @@ NULL
   if (!.scdesign3_is_intercept_only_formula(sigma_formula)) {
     return(unsupported("The shared fixed-smooth backend currently requires `sigma_formula = \"1\"`."))
   }
-  if (!family_key %in% c("poisson", "binomial", "gaussian")) {
-    return(unsupported("The shared fixed-smooth backend currently supports poisson, binomial, and gaussian families."))
-  }
   if (!scglm_method %in% c("auto", "irls")) {
     return(unsupported("The shared fixed-smooth backend currently supports `scglm_method = \"auto\"` or `\"irls\"`."))
   }
@@ -412,9 +427,30 @@ NULL
     family_key = family_key
   )
   if (is.null(setup)) {
-    return(unsupported(
-      "The smooth formula is not fixed. Use `fx = TRUE` or non-negative `sp = ...` inside the smooth term to use the shared fixed-smooth backend."
+    return(.scdesign3_fit_shared_penalized_smooth(
+      count_mat = count_mat,
+      dat_cov = dat_cov,
+      filtered_gene = filtered_gene,
+      feature_names = feature_names,
+      family_key = family_key,
+      mu_formula = mu_formula,
+      sigma_formula = sigma_formula,
+      predictor = predictor,
+      use_scglm = use_scglm,
+      scglm_method = scglm_method,
+      scglm_batch_size = scglm_batch_size,
+      scglm_lambda_grid = scglm_lambda_grid,
+      scglm_lambda_criterion = scglm_lambda_criterion,
+      scglm_mgcv_method = scglm_mgcv_method,
+      scglm_gamma = scglm_gamma,
+      scglm_scale = scglm_scale,
+      scglm_refine_lambda = scglm_refine_lambda,
+      n_cores = n_cores,
+      trace = trace
     ))
+  }
+  if (!family_key %in% c("poisson", "binomial", "gaussian")) {
+    return(unsupported("The shared fixed-smooth backend currently supports poisson, binomial, and gaussian families for fixed smooths. Free-lambda NB smooths are handled by the shared penalized smooth backend."))
   }
 
   fit_idx <- rep(TRUE, length(feature_names))
@@ -514,6 +550,184 @@ NULL
     model$logLik <- fit$logLik[fit_col]
     if (identical(family_key, "gaussian")) {
       model$sig2 <- fit$sig2[fit_col]
+    }
+
+    out[[gene]] <- if (isTRUE(trace)) {
+      list(fit = model, warning = list(), time = c(elapsed, NA_real_), removed_cell = NA)
+    } else {
+      list(fit = model, removed_cell = NA)
+    }
+  }
+
+  out
+}
+
+.scdesign3_fit_shared_penalized_smooth <- function(count_mat,
+                                                  dat_cov,
+                                                  filtered_gene,
+                                                  feature_names,
+                                                  family_key,
+                                                  mu_formula,
+                                                  sigma_formula,
+                                                  predictor,
+                                                  use_scglm,
+                                                  scglm_method,
+                                                  scglm_batch_size,
+                                                  scglm_lambda_grid,
+                                                  scglm_lambda_criterion,
+                                                  scglm_mgcv_method,
+                                                  scglm_gamma,
+                                                  scglm_scale,
+                                                  scglm_refine_lambda,
+                                                  n_cores,
+                                                  trace) {
+  unsupported <- function(reason) {
+    if (identical(use_scglm, "always")) {
+      stop(reason, call. = FALSE)
+    }
+    NULL
+  }
+
+  if (!requireNamespace("scGLM", quietly = TRUE)) {
+    return(unsupported("The shared penalized smooth backend requires package 'scGLM'."))
+  }
+  if (!scglm_method %in% c("auto", "irls")) {
+    return(unsupported("The shared penalized smooth backend currently supports `scglm_method = \"auto\"` or `\"irls\"`."))
+  }
+  if (!.scdesign3_is_intercept_only_formula(sigma_formula)) {
+    return(unsupported("The shared penalized smooth backend currently requires `sigma_formula = \"1\"`."))
+  }
+  if (!family_key %in% c("poisson", "binomial", "gaussian", "nb")) {
+    return(unsupported("The shared penalized smooth backend currently supports poisson, binomial, gaussian, and nb families."))
+  }
+  if (identical(family_key, "nb") && !requireNamespace("mgcv", quietly = TRUE)) {
+    return(unsupported("The shared penalized NB smooth backend requires package 'mgcv'."))
+  }
+
+  fit_idx <- rep(TRUE, length(feature_names))
+  if (!is.null(filtered_gene)) {
+    fit_idx <- !feature_names %in% filtered_gene
+  }
+  if (!any(fit_idx)) {
+    return(lapply(feature_names, function(gene) {
+      .scdesign3_filtered_marginal(gene, trace = trace)
+    }))
+  }
+
+  counts_fit <- count_mat[, fit_idx, drop = FALSE]
+  if (!methods::is(counts_fit, "sparseMatrix")) {
+    counts_fit <- as.matrix(counts_fit)
+    storage.mode(counts_fit) <- "double"
+  }
+
+  rhs_formula <- stats::as.formula(paste0("~", mu_formula))
+  full_formula <- stats::as.formula(paste0(predictor, "~", mu_formula))
+  family_obj <- .scdesign3_scglm_family(family_key)
+  scglm_fun <- function(name) {
+    getExportedValue("scGLM", name)
+  }
+
+  fit <- tryCatch(
+    {
+      start_time <- Sys.time()
+      out <- scglm_fun("scglm_penalized_smooth_matrix")(
+        counts = counts_fit,
+        formula = rhs_formula,
+        data = dat_cov,
+        family = family_obj,
+        lambda_grid = scglm_lambda_grid,
+        lambda_criterion = scglm_lambda_criterion,
+        mgcv_method = scglm_mgcv_method,
+        gamma = scglm_gamma,
+        scale = scglm_scale,
+        batch_size = scglm_batch_size,
+        refine = scglm_refine_lambda,
+        store_fitted = FALSE
+      )
+      attr(out, "elapsed") <- as.numeric(Sys.time() - start_time)
+      out
+    },
+    error = function(e) {
+      if (identical(use_scglm, "always")) {
+        stop(e)
+      }
+      NULL
+    }
+  )
+  if (is.null(fit)) {
+    return(NULL)
+  }
+  elapsed <- attr(fit, "elapsed")
+
+  x <- .scdesign3_scglm_training_x(fit)
+  basis_object <- .scdesign3_scglm_basis_object(full_formula, dat_cov)
+  rhs_terms <- stats::delete.response(stats::terms(rhs_formula, data = dat_cov))
+  shared <- new.env(parent = emptyenv())
+  shared$x <- x
+  shared$data <- as.data.frame(dat_cov)
+  shared$basis_object <- basis_object
+  shared$design_names <- colnames(x)
+  shared$rhs_terms <- rhs_terms
+  shared$xlevels <- .scdesign3_xlevels(rhs_terms, dat_cov)
+  shared$contrasts <- attr(x, "contrasts")
+  shared$penalty_base <- fit$penalty_base
+  shared$lambda <- fit$lambda
+  shared$lambda_criterion <- fit$lambda_criterion
+  shared$lambda_criterion_resolved <- fit$lambda_criterion_resolved
+
+  cell_names <- rownames(count_mat)
+  theta <- fit$theta
+  if (is.null(theta)) {
+    theta <- rep(NA_real_, ncol(counts_fit))
+  }
+
+  out <- vector("list", length(feature_names))
+  names(out) <- feature_names
+  fit_col <- 0L
+  for (j in seq_along(feature_names)) {
+    gene <- feature_names[j]
+    if (!fit_idx[j]) {
+      out[[gene]] <- .scdesign3_filtered_marginal(gene, trace = trace)
+      next
+    }
+
+    fit_col <- fit_col + 1L
+    y <- as.numeric(counts_fit[, fit_col])
+    coef <- fit$coefficients[, fit_col, drop = FALSE]
+    eta <- as.vector(x %*% coef)
+    mu <- as.vector(fit$family$linkinv(eta))
+    names(mu) <- cell_names
+    names(eta) <- cell_names
+    names(y) <- cell_names
+
+    theta_g <- if (identical(family_key, "nb")) theta[fit_col] else NA_real_
+    model <- .scdesign3_new_scglm_model(
+      formula = full_formula,
+      rhs_formula = rhs_formula,
+      family_key = family_key,
+      coefficients = coef,
+      x = x,
+      y = y,
+      fitted = mu,
+      eta = eta,
+      theta = theta_g,
+      data = dat_cov,
+      shared = shared,
+      backend = "scGLM::penalized_smooth",
+      feature = gene
+    )
+    if (!is.null(fit$edf)) {
+      model$edf <- fit$edf[fit_col]
+      model$edf1 <- fit$edf[fit_col]
+      model$edf2 <- fit$edf[fit_col]
+      model$df <- fit$edf[fit_col] + as.integer(identical(family_key, "nb")) + as.integer(identical(family_key, "gaussian"))
+      model$df.residual <- max(length(y) - fit$edf[fit_col], 0)
+    }
+    if (!is.null(fit$lambda)) {
+      model$lambda <- fit$lambda[fit_col]
+    }
+    if (!is.null(fit$score)) {
+      model$lambda_score <- fit$score[fit_col]
     }
 
     out[[gene]] <- if (isTRUE(trace)) {

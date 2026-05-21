@@ -23,6 +23,12 @@ scdesign3(
   scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls",
     "newton_stein"),
   scglm_batch_size = 256L,
+  scglm_lambda_grid = 10^seq(-4, 4, length.out = 9L),
+  scglm_lambda_criterion = c("mgcv_default", "ubre_aic", "gcv"),
+  scglm_mgcv_method = "GCV.Cp",
+  scglm_gamma = 1,
+  scglm_scale = 0,
+  scglm_refine_lambda = FALSE,
   edf_flexible = FALSE,
   corr_formula,
   empirical_quantile = FALSE,
@@ -90,6 +96,22 @@ original per-feature backend unless \code{use_scglm = "always"}.}
 \item{scglm_method}{A string selecting the scGLM matrix backend.}
 
 \item{scglm_batch_size}{Number of features to process per scGLM batch.}
+
+\item{scglm_lambda_grid}{Positive smoothing-parameter grid used by the
+scGLM shared penalized smooth backend for \code{s(..., fx = FALSE)} terms.}
+
+\item{scglm_lambda_criterion}{Criterion for selecting gene-specific
+smoothing parameters from \code{scglm_lambda_grid}. \code{"mgcv_default"}
+follows mgcv's default \code{method = "GCV.Cp"} behavior.}
+
+\item{scglm_mgcv_method}{mgcv smoothing-selection method to mimic when
+\code{scglm_lambda_criterion = "mgcv_default"}.}
+
+\item{scglm_gamma, scglm_scale}{Criterion controls passed to the scGLM
+penalized smooth backend.}
+
+\item{scglm_refine_lambda}{Whether to run a local refinement pass around the
+selected lambda grid values.}
 
 \item{edf_flexible}{A logic variable. It is used for accelerating for spatial model if k is large in 'mu_formula'. Default is FALSE.}
 

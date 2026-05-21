@@ -29,6 +29,17 @@
 #' original per-feature backend unless \code{use_scglm = "always"}.
 #' @param scglm_method A string selecting the scGLM matrix backend.
 #' @param scglm_batch_size Number of features to process per scGLM batch.
+#' @param scglm_lambda_grid Positive smoothing-parameter grid used by the
+#' scGLM shared penalized smooth backend for \code{s(..., fx = FALSE)} terms.
+#' @param scglm_lambda_criterion Criterion for selecting gene-specific
+#' smoothing parameters from \code{scglm_lambda_grid}. \code{"mgcv_default"}
+#' follows mgcv's default \code{method = "GCV.Cp"} behavior.
+#' @param scglm_mgcv_method mgcv smoothing-selection method to mimic when
+#' \code{scglm_lambda_criterion = "mgcv_default"}.
+#' @param scglm_gamma,scglm_scale Criterion controls passed to the scGLM
+#' penalized smooth backend.
+#' @param scglm_refine_lambda Whether to run a local refinement pass around the
+#' selected lambda grid values.
 #' @param edf_flexible A logic variable. It is used for accelerating for spatial model if k is large in 'mu_formula'. Default is FALSE.
 #' @param corr_formula A string of the correlation structure.
 #' @param empirical_quantile Please only use it if you clearly know what will happen! A logic variable. If TRUE, DO NOT fit the copula and use the EMPIRICAL CDF values of the original data; it will make the simulated data fixed (no randomness). Default is FALSE. Only works if ncell is the same as your original data.
@@ -112,6 +123,12 @@ scdesign3 <- function(sce,
                       scglm_fit = c("approximate", "exact"),
                       scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
                       scglm_batch_size = 256L,
+                      scglm_lambda_grid = 10 ^ seq(-4, 4, length.out = 9L),
+                      scglm_lambda_criterion = c("mgcv_default", "ubre_aic", "gcv"),
+                      scglm_mgcv_method = "GCV.Cp",
+                      scglm_gamma = 1,
+                      scglm_scale = 0,
+                      scglm_refine_lambda = FALSE,
                       edf_flexible = FALSE,
                       corr_formula,
                       empirical_quantile = FALSE,
@@ -140,6 +157,7 @@ scdesign3 <- function(sce,
   use_scglm <- match.arg(use_scglm)
   scglm_fit <- match.arg(scglm_fit)
   scglm_method <- match.arg(scglm_method)
+  scglm_lambda_criterion <- match.arg(scglm_lambda_criterion)
 
   if (!copula %in% allowed_copula) {
     stop("copula must be one of 'gaussian' or 'vine'.")
@@ -191,6 +209,12 @@ scdesign3 <- function(sce,
     scglm_fit = scglm_fit,
     scglm_method = scglm_method,
     scglm_batch_size = scglm_batch_size,
+    scglm_lambda_grid = scglm_lambda_grid,
+    scglm_lambda_criterion = scglm_lambda_criterion,
+    scglm_mgcv_method = scglm_mgcv_method,
+    scglm_gamma = scglm_gamma,
+    scglm_scale = scglm_scale,
+    scglm_refine_lambda = scglm_refine_lambda,
     edf_flexible = edf_flexible,
     parallelization = parallelization,
     BPPARAM = BPPARAM,
