@@ -41,7 +41,27 @@ NULL
   }
 
   family_key <- unique(family_use)
-  categorical_fit <- .scdesign3_fit_categorical_gamlss(
+  if (!(.scdesign3_formula_has_smooth(mu_formula) ||
+        .scdesign3_formula_has_smooth(sigma_formula))) {
+    categorical_fit <- .scdesign3_fit_categorical_gamlss(
+      count_mat = count_mat,
+      dat_cov = dat_cov,
+      filtered_gene = filtered_gene,
+      feature_names = feature_names,
+      family_key = family_key,
+      mu_formula = mu_formula,
+      sigma_formula = sigma_formula,
+      predictor = predictor,
+      use_scglm = use_scglm,
+      scglm_fit = scglm_fit,
+      trace = trace
+    )
+    if (!is.null(categorical_fit)) {
+      return(categorical_fit)
+    }
+  }
+
+  gamlss_smooth_fit <- .scdesign3_fit_shared_gamlss_penalized_smooth(
     count_mat = count_mat,
     dat_cov = dat_cov,
     filtered_gene = filtered_gene,
@@ -51,11 +71,16 @@ NULL
     sigma_formula = sigma_formula,
     predictor = predictor,
     use_scglm = use_scglm,
-    scglm_fit = scglm_fit,
+    scglm_method = scglm_method,
+    scglm_batch_size = scglm_batch_size,
+    scglm_lambda_grid = scglm_lambda_grid,
+    scglm_lambda_criterion = scglm_lambda_criterion,
+    scglm_gamma = scglm_gamma,
+    n_cores = n_cores,
     trace = trace
   )
-  if (!is.null(categorical_fit)) {
-    return(categorical_fit)
+  if (!is.null(gamlss_smooth_fit)) {
+    return(gamlss_smooth_fit)
   }
 
   smooth_fit <- .scdesign3_fit_shared_fixed_smooth(
@@ -86,7 +111,7 @@ NULL
   if (.scdesign3_formula_has_smooth(mu_formula) ||
       .scdesign3_formula_has_smooth(sigma_formula)) {
     return(unsupported(
-      "The scGLM smooth backend is used only for fixed-basis or fixed-penalty smooths with `sigma_formula = \"1\"`; falling back to mgcv/gamlss."
+      "The scGLM smooth backend is used only for supported fixed-basis, fixed-penalty, or experimental Gaussian/NB GAMLSS smooths; falling back to mgcv/gamlss."
     ))
   }
 
@@ -550,6 +575,201 @@ NULL
     model$logLik <- fit$logLik[fit_col]
     if (identical(family_key, "gaussian")) {
       model$sig2 <- fit$sig2[fit_col]
+    }
+
+    out[[gene]] <- if (isTRUE(trace)) {
+      list(fit = model, warning = list(), time = c(elapsed, NA_real_), removed_cell = NA)
+    } else {
+      list(fit = model, removed_cell = NA)
+    }
+  }
+
+  out
+}
+
+.scdesign3_fit_shared_gamlss_penalized_smooth <- function(count_mat,
+                                                          dat_cov,
+                                                          filtered_gene,
+                                                          feature_names,
+                                                          family_key,
+                                                          mu_formula,
+                                                          sigma_formula,
+                                                          predictor,
+                                                          use_scglm,
+                                                          scglm_method,
+                                                          scglm_batch_size,
+                                                          scglm_lambda_grid,
+                                                          scglm_lambda_criterion,
+                                                          scglm_gamma,
+                                                          n_cores,
+                                                          trace) {
+  unsupported <- function(reason) {
+    if (identical(use_scglm, "always")) {
+      stop(reason, call. = FALSE)
+    }
+    NULL
+  }
+
+  if (.scdesign3_is_intercept_only_formula(sigma_formula)) {
+    return(NULL)
+  }
+  if (!(.scdesign3_formula_has_smooth(mu_formula) ||
+        .scdesign3_formula_has_smooth(sigma_formula))) {
+    return(NULL)
+  }
+  if (!family_key %in% c("gaussian", "nb")) {
+    return(unsupported("The experimental shared GAMLSS smooth backend currently supports gaussian and nb families."))
+  }
+  if (!scglm_method %in% c("auto", "irls")) {
+    return(unsupported("The experimental shared GAMLSS smooth backend currently supports `scglm_method = \"auto\"` or `\"irls\"`."))
+  }
+  if (!requireNamespace("scGLM", quietly = TRUE)) {
+    return(unsupported("The experimental shared GAMLSS smooth backend requires package 'scGLM'."))
+  }
+  if (!"scglm_gamlss_penalized_path_matrix" %in% getNamespaceExports("scGLM")) {
+    return(unsupported("The installed scGLM does not export `scglm_gamlss_penalized_path_matrix()`."))
+  }
+
+  fit_idx <- rep(TRUE, length(feature_names))
+  if (!is.null(filtered_gene)) {
+    fit_idx <- !feature_names %in% filtered_gene
+  }
+  if (!any(fit_idx)) {
+    return(lapply(feature_names, function(gene) {
+      .scdesign3_filtered_marginal(gene, trace = trace)
+    }))
+  }
+
+  counts_fit <- count_mat[, fit_idx, drop = FALSE]
+  if (!methods::is(counts_fit, "sparseMatrix")) {
+    counts_fit <- as.matrix(counts_fit)
+    storage.mode(counts_fit) <- "double"
+  }
+
+  mu_rhs <- stats::as.formula(paste0("~", mu_formula))
+  sigma_rhs <- stats::as.formula(paste0("~", sigma_formula))
+  full_formula <- stats::as.formula(paste0(predictor, "~", mu_formula))
+  sigma_full_formula <- stats::as.formula(paste0(predictor, "~", sigma_formula))
+  gamlss_family <- if (identical(family_key, "gaussian")) "NO" else "NBI"
+  scglm_fun <- getExportedValue("scGLM", "scglm_gamlss_penalized_path_matrix")
+
+  fit <- tryCatch(
+    {
+      start_time <- Sys.time()
+      out <- scglm_fun(
+        counts = counts_fit,
+        mu_formula = mu_rhs,
+        sigma_formula = sigma_rhs,
+        data = dat_cov,
+        family = gamlss_family,
+        lambda_grid = scglm_lambda_grid,
+        lambda_criterion = scglm_lambda_criterion,
+        gamma = scglm_gamma,
+        batch_size = scglm_batch_size,
+        store_fitted = FALSE
+      )
+      attr(out, "elapsed") <- as.numeric(Sys.time() - start_time)
+      out
+    },
+    error = function(e) {
+      if (identical(use_scglm, "always")) {
+        stop(e)
+      }
+      NULL
+    }
+  )
+  if (is.null(fit)) {
+    return(NULL)
+  }
+  elapsed <- attr(fit, "elapsed")
+
+  x_mu <- fit$x_mu
+  x_sigma <- fit$x_sigma
+  rhs_terms <- stats::delete.response(stats::terms(mu_rhs, data = dat_cov))
+  sigma_rhs_terms <- stats::delete.response(stats::terms(sigma_rhs, data = dat_cov))
+  shared <- new.env(parent = emptyenv())
+  shared$x <- x_mu
+  shared$x_mu <- x_mu
+  shared$x_sigma <- x_sigma
+  shared$data <- as.data.frame(dat_cov)
+  shared$basis_object <- .scdesign3_scglm_basis_object(full_formula, dat_cov)
+  shared$basis_object_mu <- shared$basis_object
+  shared$basis_object_sigma <- .scdesign3_scglm_basis_object(sigma_full_formula, dat_cov)
+  shared$design_names <- colnames(x_mu)
+  shared$design_names_mu <- colnames(x_mu)
+  shared$design_names_sigma <- colnames(x_sigma)
+  shared$rhs_terms <- rhs_terms
+  shared$rhs_terms_mu <- rhs_terms
+  shared$rhs_terms_sigma <- sigma_rhs_terms
+  shared$xlevels <- .scdesign3_xlevels(rhs_terms, dat_cov)
+  shared$xlevels_mu <- shared$xlevels
+  shared$xlevels_sigma <- .scdesign3_xlevels(sigma_rhs_terms, dat_cov)
+  shared$contrasts <- attr(x_mu, "contrasts")
+  shared$contrasts_mu <- attr(x_mu, "contrasts")
+  shared$contrasts_sigma <- attr(x_sigma, "contrasts")
+
+  cell_names <- rownames(count_mat)
+  out <- vector("list", length(feature_names))
+  names(out) <- feature_names
+  fit_col <- 0L
+  for (j in seq_along(feature_names)) {
+    gene <- feature_names[j]
+    if (!fit_idx[j]) {
+      out[[gene]] <- .scdesign3_filtered_marginal(gene, trace = trace)
+      next
+    }
+
+    fit_col <- fit_col + 1L
+    y <- as.numeric(counts_fit[, fit_col])
+    coef_mu <- fit$coefficients_mu[, fit_col, drop = FALSE]
+    coef_sigma <- fit$coefficients_sigma[, fit_col, drop = FALSE]
+    eta <- as.vector(x_mu %*% coef_mu)
+    eta_sigma <- as.vector(x_sigma %*% coef_sigma)
+    mu <- if (identical(family_key, "gaussian")) eta else exp(pmax(pmin(eta, 30), -30))
+    sigma <- exp(pmax(pmin(eta_sigma, 20), -20))
+    names(mu) <- cell_names
+    names(eta) <- cell_names
+    names(sigma) <- cell_names
+    names(eta_sigma) <- cell_names
+    names(y) <- cell_names
+
+    theta_g <- if (identical(family_key, "nb")) 1 / mean(pmax(sigma, .Machine$double.eps)) else NA_real_
+    model <- .scdesign3_new_scglm_model(
+      formula = full_formula,
+      rhs_formula = mu_rhs,
+      family_key = family_key,
+      coefficients = coef_mu,
+      x = x_mu,
+      y = y,
+      fitted = mu,
+      eta = eta,
+      theta = theta_g,
+      data = dat_cov,
+      shared = shared,
+      backend = "scGLM::gamlss_penalized_path",
+      feature = gene
+    )
+    model$coefficients_sigma <- as.numeric(coef_sigma)
+    names(model$coefficients_sigma) <- rownames(coef_sigma)
+    model$sigma.fitted <- sigma
+    model$sigma.linear.predictors <- eta_sigma
+    model$sigma_formula <- sigma_full_formula
+    model$gamlss_family <- gamlss_family
+    model$scglm_internal_backend <- fit$backend
+    model$scglm_lambda_criterion_resolved <- fit$lambda_criterion_resolved
+    model$lambda_mu <- fit$lambda_mu[fit_col]
+    model$lambda_sigma <- fit$lambda_sigma[fit_col]
+    model$edf_mu <- fit$edf_mu[fit_col]
+    model$edf_sigma <- fit$edf_sigma[fit_col]
+    model$edf <- fit$edf_mu[fit_col] + fit$edf_sigma[fit_col]
+    model$edf1 <- model$edf
+    model$edf2 <- model$edf
+    model$df <- model$edf
+    model$df.residual <- max(length(y) - model$edf, 0)
+    model$logLik <- if (identical(family_key, "gaussian")) {
+      sum(gamlss.dist::dNO(y, mu = mu, sigma = pmax(sigma, .Machine$double.eps), log = TRUE))
+    } else {
+      sum(gamlss.dist::dNBI(y, mu = pmax(mu, .Machine$double.eps), sigma = pmax(sigma, .Machine$double.eps), log = TRUE))
     }
 
     out[[gene]] <- if (isTRUE(trace)) {
@@ -2042,42 +2262,58 @@ nobs.scdesign3_categorical_nbi <- function(object, ...) {
 predict.scdesign3_scglm <- function(object,
                                     newdata = NULL,
                                     type = c("link", "response"),
+                                    what = c("mu", "sigma"),
                                     ...) {
   type <- match.arg(type)
+  what <- match.arg(what)
+  if (identical(what, "sigma") && is.null(object$coefficients_sigma)) {
+    stop("This scGLM model does not contain a sigma predictor.", call. = FALSE)
+  }
   eta <- if (is.null(newdata)) {
-    object$linear.predictors
+    if (identical(what, "sigma")) object$sigma.linear.predictors else object$linear.predictors
   } else {
-    x <- .scdesign3_scglm_predict_matrix(object, newdata)
-    as.vector(x %*% object$coefficients)
+    x <- .scdesign3_scglm_predict_matrix(object, newdata, parameter = what)
+    coef <- if (identical(what, "sigma")) object$coefficients_sigma else object$coefficients
+    as.vector(x %*% coef)
   }
   if (identical(type, "response")) {
-    out <- object$family$linkinv(eta)
+    out <- if (identical(what, "sigma")) exp(pmax(pmin(eta, 20), -20)) else object$family$linkinv(eta)
   } else {
     out <- eta
   }
   if (is.null(names(out))) {
-    names(out) <- if (is.null(newdata)) names(object$fitted.values) else rownames(newdata)
+    names(out) <- if (is.null(newdata)) {
+      if (identical(what, "sigma")) names(object$sigma.fitted) else names(object$fitted.values)
+    } else {
+      rownames(newdata)
+    }
   }
   out
 }
 
-.scdesign3_scglm_predict_matrix <- function(object, newdata) {
+.scdesign3_scglm_predict_matrix <- function(object, newdata, parameter = c("mu", "sigma")) {
+  parameter <- match.arg(parameter)
   newdata <- as.data.frame(newdata)
   shared <- .scdesign3_scglm_shared(object)
-  if (!is.null(shared$basis_object)) {
+  basis_object <- if (identical(parameter, "sigma")) shared$basis_object_sigma else shared$basis_object
+  design_names <- if (identical(parameter, "sigma")) shared$design_names_sigma else shared$design_names
+  rhs_terms <- if (identical(parameter, "sigma")) shared$rhs_terms_sigma else shared$rhs_terms
+  xlevels <- if (identical(parameter, "sigma")) shared$xlevels_sigma else shared$xlevels
+  contrasts <- if (identical(parameter, "sigma")) shared$contrasts_sigma else shared$contrasts
+  if (!is.null(basis_object)) {
     basis_data <- newdata
     basis_data$gene <- 0
-    lp <- stats::predict(shared$basis_object, newdata = basis_data, type = "lpmatrix")
-    return(.scdesign3_align_matrix_columns(lp, shared$design_names))
+    lp <- stats::predict(basis_object, newdata = basis_data, type = "lpmatrix")
+    return(.scdesign3_align_matrix_columns(lp, design_names))
   }
   mf <- stats::model.frame(
-    shared$rhs_terms,
+    rhs_terms,
     data = newdata,
     na.action = stats::na.pass,
-    xlev = shared$xlevels
+    xlev = xlevels
   )
-  x <- stats::model.matrix(shared$rhs_terms, data = mf, contrasts.arg = shared$contrasts)
-  .scdesign3_align_matrix_columns(x, shared$design_names)
+  x <- stats::model.matrix(rhs_terms, data = mf, contrasts.arg = contrasts)
+  .scdesign3_align_matrix_columns(x, design_names)
 }
 
 .scdesign3_align_matrix_columns <- function(x, target_names) {

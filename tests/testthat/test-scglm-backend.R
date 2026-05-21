@@ -105,6 +105,80 @@ test_that("fit_marginal auto uses shared penalized smooths for NB free-lambda fo
   expect_true(is.finite(fit[[1]]$fit$lambda))
 })
 
+test_that("fit_marginal uses experimental shared GAMLSS smooth backend", {
+  skip_if_not_installed("scGLM")
+  skip_if_not_installed("mgcv")
+
+  set.seed(105)
+  n <- 180L
+  g <- 3L
+  dat <- data.frame(pseudotime = stats::runif(n))
+  rownames(dat) <- paste0("cell", seq_len(n))
+  mu_truth <- 0.5 + sin(2 * pi * dat$pseudotime)
+  sigma_truth <- exp(-0.3 + 0.4 * cos(2 * pi * dat$pseudotime))
+  count_mat <- matrix(0, nrow = n, ncol = g)
+  for (j in seq_len(g)) {
+    count_mat[, j] <- mu_truth + stats::rnorm(1L, 0, 0.1) +
+      stats::rnorm(n, sd = sigma_truth)
+  }
+  rownames(count_mat) <- rownames(dat)
+  colnames(count_mat) <- paste0("gene", seq_len(g))
+
+  fit <- fit_marginal(
+    data = list(count_mat = count_mat, dat = dat, filtered_gene = NULL),
+    mu_formula = "s(pseudotime, bs = 'tp', k = 8)",
+    sigma_formula = "s(pseudotime, bs = 'tp', k = 8)",
+    family_use = "gaussian",
+    n_cores = 1,
+    use_scglm = "always",
+    scglm_lambda_grid = 10 ^ seq(-2, 2, length.out = 3L)
+  )
+
+  expect_s3_class(fit[[1]]$fit, "scdesign3_scglm")
+  expect_identical(fit[[1]]$fit$backend, "scGLM::gamlss_penalized_path")
+  expect_match(fit[[1]]$fit$scglm_internal_backend, "gamlss")
+  expect_gt(stats::cor(stats::predict(fit[[1]]$fit, type = "response"), mu_truth), 0.85)
+  expect_gt(stats::cor(stats::predict(fit[[1]]$fit, type = "response", what = "sigma"), sigma_truth), 0.5)
+})
+
+test_that("fit_marginal uses compiled shared NBI GAMLSS smooth backend", {
+  skip_if_not_installed("scGLM")
+  skip_if_not_installed("mgcv")
+  skip_if_not_installed("gamlss.dist")
+
+  set.seed(106)
+  n <- 160L
+  g <- 2L
+  dat <- data.frame(x = stats::runif(n))
+  rownames(dat) <- paste0("cell", seq_len(n))
+  mu_base <- exp(0.7 + 0.5 * sin(2 * pi * dat$x))
+  sigma_truth <- exp(-1 + 0.4 * cos(2 * pi * dat$x))
+  count_mat <- matrix(0, nrow = n, ncol = g)
+  mu_truth <- matrix(0, nrow = n, ncol = g)
+  for (j in seq_len(g)) {
+    mu_truth[, j] <- mu_base * exp(stats::rnorm(1L, 0, 0.08))
+    count_mat[, j] <- stats::rnbinom(n, size = 1 / sigma_truth, mu = mu_truth[, j])
+  }
+  rownames(count_mat) <- rownames(dat)
+  colnames(count_mat) <- paste0("gene", seq_len(g))
+
+  fit <- fit_marginal(
+    data = list(count_mat = count_mat, dat = dat, filtered_gene = NULL),
+    mu_formula = "s(x, bs = 'tp', k = 6)",
+    sigma_formula = "s(x, bs = 'tp', k = 6)",
+    family_use = "nb",
+    n_cores = 1,
+    use_scglm = "always",
+    scglm_lambda_grid = 10 ^ seq(-2, 2, length.out = 3L)
+  )
+
+  expect_s3_class(fit[[1]]$fit, "scdesign3_scglm")
+  expect_identical(fit[[1]]$fit$backend, "scGLM::gamlss_penalized_path")
+  expect_identical(fit[[1]]$fit$scglm_internal_backend, "Rcpp-gamlss-nbi-penalized-pirls-lambda-path")
+  expect_gt(stats::cor(stats::predict(fit[[1]]$fit, type = "response"), mu_truth[, 1L]), 0.75)
+  expect_true(all(stats::predict(fit[[1]]$fit, type = "response", what = "sigma") > 0))
+})
+
 test_that("fit_marginal uses compressed categorical NBI backend for GAMLSS-style sigma models", {
   skip_if_not_installed("SingleCellExperiment")
 
