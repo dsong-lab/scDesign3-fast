@@ -21,6 +21,12 @@
 #' \code{scGLM} marginal backend. Must be one of \code{"auto"},
 #' \code{"always"}, or \code{"never"}. For categorical shared designs,
 #' \code{"auto"} uses the scGLM categorical closed-form backend by default.
+#' @param scglm_fit A string selecting the accuracy/speed policy for automatic
+#' scGLM dispatch. \code{"approximate"} uses the fastest shared-design backend
+#' available for the formula class. \code{"exact"} uses batched IRLS/fixed
+#' penalty IRLS paths intended to match the original glm/gam likelihood problem
+#' when scGLM supports that case; unsupported exact cases fall back to the
+#' original per-feature backend unless \code{use_scglm = "always"}.
 #' @param scglm_method A string selecting the scGLM matrix backend.
 #' @param scglm_batch_size Number of features to process per scGLM batch.
 #' @param edf_flexible A logic variable. It is used for accelerating for spatial model if k is large in 'mu_formula'. Default is FALSE.
@@ -103,6 +109,7 @@ scdesign3 <- function(sce,
                       correlation_function = "default",
                       usebam = FALSE,
                       use_scglm = c("auto", "always", "never"),
+                      scglm_fit = c("approximate", "exact"),
                       scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
                       scglm_batch_size = 256L,
                       edf_flexible = FALSE,
@@ -131,6 +138,7 @@ scdesign3 <- function(sce,
   allowed_parallelization <- c("mcmapply", "bpmapply", "pbmcmapply")
   allowed_correlation_function <- c("default", "coop")
   use_scglm <- match.arg(use_scglm)
+  scglm_fit <- match.arg(scglm_fit)
   scglm_method <- match.arg(scglm_method)
 
   if (!copula %in% allowed_copula) {
@@ -180,6 +188,7 @@ scdesign3 <- function(sce,
     family_use = family_use,
     usebam = usebam,
     use_scglm = use_scglm,
+    scglm_fit = scglm_fit,
     scglm_method = scglm_method,
     scglm_batch_size = scglm_batch_size,
     edf_flexible = edf_flexible,

@@ -21,6 +21,13 @@
 #' and when the requested model is supported. For categorical shared designs,
 #' \code{"auto"} uses the scGLM categorical closed-form backend by default.
 #' Unsupported models fall back to the original per-feature mgcv/gamlss path.
+#' @param scglm_fit A string selecting the accuracy/speed policy for
+#' \code{scglm_method = "auto"}. \code{"approximate"} uses the fastest
+#' shared-design backend available for the formula class. \code{"exact"} uses
+#' batched IRLS/fixed-penalty IRLS paths intended to match the original
+#' glm/gam likelihood problem when scGLM supports that case; unsupported exact
+#' cases fall back to the original per-feature backend unless
+#' \code{use_scglm = "always"}.
 #' @param scglm_method A string selecting the scGLM matrix backend. Must be one
 #' of \code{"auto"}, \code{"categorical_closed_form"},
 #' \code{"categorical_irls"}, \code{"irls"}, or \code{"newton_stein"}.
@@ -67,6 +74,7 @@ fit_marginal <- function(data,
                          n_cores,
                          usebam = FALSE,
                          use_scglm = c("auto", "always", "never"),
+                         scglm_fit = c("approximate", "exact"),
                          scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein"),
                          scglm_batch_size = 256L,
                          edf_flexible = FALSE,
@@ -80,6 +88,7 @@ fit_marginal <- function(data,
   filtered_gene <- data$filtered_gene
   feature_names <- colnames(count_mat)
   use_scglm <- match.arg(use_scglm)
+  scglm_fit <- match.arg(scglm_fit)
   scglm_method <- match.arg(scglm_method)
   
   
@@ -124,7 +133,7 @@ fit_marginal <- function(data,
   }
 
   if (!isTRUE(edf_fitting)) {
-    scglm_fit <- .scdesign3_fit_marginal_scglm(
+    scglm_res <- .scdesign3_fit_marginal_scglm(
       count_mat = count_mat,
       dat_cov = dat_cov,
       filtered_gene = filtered_gene,
@@ -134,14 +143,15 @@ fit_marginal <- function(data,
       sigma_formula = sigma_formula,
       predictor = predictor,
       use_scglm = use_scglm,
+      scglm_fit = scglm_fit,
       scglm_method = scglm_method,
       scglm_batch_size = scglm_batch_size,
       n_cores = n_cores,
       trace = trace,
       filter_cells = filter_cells
     )
-    if (!is.null(scglm_fit)) {
-      return(scglm_fit)
+    if (!is.null(scglm_res)) {
+      return(scglm_res)
     }
   }
   

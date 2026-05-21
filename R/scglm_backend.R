@@ -10,6 +10,7 @@ NULL
                                           sigma_formula,
                                           predictor,
                                           use_scglm,
+                                          scglm_fit,
                                           scglm_method,
                                           scglm_batch_size,
                                           n_cores,
@@ -44,6 +45,7 @@ NULL
     sigma_formula = sigma_formula,
     predictor = predictor,
     use_scglm = use_scglm,
+    scglm_fit = scglm_fit,
     trace = trace
   )
   if (!is.null(categorical_fit)) {
@@ -60,6 +62,7 @@ NULL
     sigma_formula = sigma_formula,
     predictor = predictor,
     use_scglm = use_scglm,
+    scglm_fit = scglm_fit,
     scglm_method = scglm_method,
     scglm_batch_size = scglm_batch_size,
     n_cores = n_cores,
@@ -110,12 +113,15 @@ NULL
     method = scglm_method,
     family_key = family_key,
     formula = rhs_formula,
-    data = dat_cov
+    data = dat_cov,
+    scglm_fit = scglm_fit
   )
   if (identical(method, "unsupported")) {
     return(unsupported(paste0(
-      "The automatic scGLM backend uses NB only for intercept-only or all-categorical formulas. ",
-      "Set `use_scglm = \"always\"` and `scglm_method = \"newton_stein\"` to force an NB smooth fit."
+      "The requested `scglm_fit = \"", scglm_fit, "\"` policy is not supported ",
+      "by automatic scGLM dispatch for this family/formula combination. ",
+      "Use `scglm_fit = \"approximate\"` for Newton-Stein or closed-form NB fits, ",
+      "or set an explicit `scglm_method` if you want to force a backend."
     )))
   }
   scglm_fun <- function(name) {
@@ -229,7 +235,9 @@ NULL
                                               sigma_formula,
                                               predictor,
                                               use_scglm,
+                                              scglm_fit,
                                               trace) {
+  scglm_fit <- match.arg(scglm_fit, c("approximate", "exact"))
   if (identical(family_key, "nb")) {
     return(.scdesign3_fit_categorical_nbi_gamlss(
       count_mat = count_mat,
@@ -241,6 +249,7 @@ NULL
       sigma_formula = sigma_formula,
       predictor = predictor,
       use_scglm = use_scglm,
+      scglm_fit = scglm_fit,
       trace = trace
     ))
   }
@@ -369,10 +378,12 @@ NULL
                                                sigma_formula,
                                                predictor,
                                                use_scglm,
+                                               scglm_fit,
                                                scglm_method,
                                                scglm_batch_size,
                                                n_cores,
                                                trace) {
+  scglm_fit <- match.arg(scglm_fit, c("approximate", "exact"))
   if (!.scdesign3_formula_has_smooth(mu_formula)) {
     return(NULL)
   }
@@ -832,7 +843,9 @@ NULL
                                                   sigma_formula,
                                                   predictor,
                                                   use_scglm,
+                                                  scglm_fit,
                                                   trace) {
+  scglm_fit <- match.arg(scglm_fit, c("approximate", "exact"))
   if (!identical(family_key, "nb") ||
       .scdesign3_is_intercept_only_formula(sigma_formula)) {
     return(NULL)
@@ -1613,25 +1626,47 @@ nobs.scdesign3_categorical_nbi <- function(object, ...) {
   )
 }
 
-.scdesign3_scglm_method <- function(method, family_key, formula, data) {
+.scdesign3_scglm_method <- function(method,
+                                    family_key,
+                                    formula,
+                                    data,
+                                    scglm_fit = c("approximate", "exact")) {
   method <- match.arg(
     method,
     c("auto", "categorical_closed_form", "categorical_irls", "irls", "newton_stein")
   )
+  scglm_fit <- match.arg(scglm_fit)
   if (!identical(method, "auto")) {
     return(method)
   }
+
+  is_intercept_only <- .scdesign3_formula_is_intercept_only_rhs(formula)
+  is_all_categorical <- .scdesign3_formula_is_all_categorical(formula, data)
+
+  if (identical(scglm_fit, "exact")) {
+    if (identical(family_key, "nb")) {
+      return("unsupported")
+    }
+    if (is_all_categorical) {
+      return("categorical_irls")
+    }
+    return("irls")
+  }
+
   if (identical(family_key, "nb")) {
-    if (.scdesign3_formula_is_intercept_only_rhs(formula)) {
+    if (is_intercept_only) {
       return("newton_stein")
     }
-    if (.scdesign3_formula_is_all_categorical(formula, data)) {
+    if (is_all_categorical) {
       return("categorical_closed_form")
     }
-    return("unsupported")
+    return("newton_stein")
   }
-  if (.scdesign3_formula_is_all_categorical(formula, data)) {
+  if (is_all_categorical) {
     return("categorical_closed_form")
+  }
+  if (family_key %in% c("poisson", "binomial")) {
+    return("newton_stein")
   }
   "irls"
 }

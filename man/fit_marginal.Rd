@@ -13,6 +13,7 @@ fit_marginal(
   n_cores,
   usebam = FALSE,
   use_scglm = c("auto", "always", "never"),
+  scglm_fit = c("approximate", "exact"),
   scglm_method = c("auto", "categorical_closed_form", "categorical_irls", "irls",
     "newton_stein"),
   scglm_batch_size = 256L,
@@ -48,6 +49,14 @@ and 'gaussian distribution' respectively.}
 and when the requested model is supported. For categorical shared designs,
 \code{"auto"} uses the scGLM categorical closed-form backend by default.
 Unsupported models fall back to the original per-feature mgcv/gamlss path.}
+
+\item{scglm_fit}{A string selecting the accuracy/speed policy for
+\code{scglm_method = "auto"}. \code{"approximate"} uses the fastest
+shared-design backend available for the formula class. \code{"exact"} uses
+batched IRLS/fixed-penalty IRLS paths intended to match the original
+glm/gam likelihood problem when scGLM supports that case; unsupported exact
+cases fall back to the original per-feature backend unless
+\code{use_scglm = "always"}.}
 
 \item{scglm_method}{A string selecting the scGLM matrix backend. Must be one
 of \code{"auto"}, \code{"categorical_closed_form"},

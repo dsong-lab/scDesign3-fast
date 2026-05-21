@@ -44,6 +44,38 @@ test_that("fit_marginal uses scGLM for shared categorical poisson models", {
   expect_equal(unique(as.numeric(para$sigma_mat)), 1)
 })
 
+test_that("scglm_fit controls exact versus approximate automatic dispatch", {
+  dat <- data.frame(
+    group = factor(rep(c("a", "b"), each = 5L)),
+    x = seq(0, 1, length.out = 10L)
+  )
+
+  expect_identical(
+    .scdesign3_scglm_method("auto", "poisson", ~ group, dat, scglm_fit = "approximate"),
+    "categorical_closed_form"
+  )
+  expect_identical(
+    .scdesign3_scglm_method("auto", "poisson", ~ group, dat, scglm_fit = "exact"),
+    "categorical_irls"
+  )
+  expect_identical(
+    .scdesign3_scglm_method("auto", "poisson", ~ x, dat, scglm_fit = "approximate"),
+    "newton_stein"
+  )
+  expect_identical(
+    .scdesign3_scglm_method("auto", "poisson", ~ x, dat, scglm_fit = "exact"),
+    "irls"
+  )
+  expect_identical(
+    .scdesign3_scglm_method("auto", "nb", ~ x, dat, scglm_fit = "approximate"),
+    "newton_stein"
+  )
+  expect_identical(
+    .scdesign3_scglm_method("auto", "nb", ~ x, dat, scglm_fit = "exact"),
+    "unsupported"
+  )
+})
+
 test_that("fit_marginal auto avoids slow NB smooth scGLM path", {
   skip_if_not_installed("scGLM")
   skip_if_not_installed("mgcv")
