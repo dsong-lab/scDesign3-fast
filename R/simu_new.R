@@ -34,6 +34,8 @@
 #' \code{MulticoreParam} object offered by the package 'BiocParallel. The default value is NULL.
 #' @param filtered_gene A vector or NULL which contains genes that are excluded in the marginal and copula fitting 
 #' steps because these genes only express in less than two cells. This can be obtain from  \code{\link{construct_data}}
+#' @param sim_block_size Number of genes to simulate per bounded working block.
+#' @param output_sparse If TRUE, return a sparse feature-by-cell matrix and avoid dense final materialization. The default follows whether the input assay is sparse.
 #' @return A feature by cell matrix of the new simulated count (expression) matrix or sparse matrix.
 #' @examples
 #'   data(example_sce)
@@ -105,7 +107,9 @@ simu_new <- function(sce,
                      important_feature = "all",
                      parallelization = "mcmapply",
                      BPPARAM = NULL,
-                     filtered_gene){
+                     filtered_gene,
+                     sim_block_size = 256L,
+                     output_sparse = NULL){
   if(!is.null(quantile_mat) & !is.null(copula_list)) {
     stop("You can only provide either the quantile_mat or the copula_list!")
   }
@@ -130,6 +134,11 @@ simu_new <- function(sce,
   }else{
     total_cells <- dim(new_covariate)[1]
     cell_names <- rownames(new_covariate)
+  }
+  if (is.null(output_sparse)) {
+    output_sparse <- methods::is(SummarizedExperiment::assay(sce, assay_use), "sparseMatrix")
+  } else {
+    output_sparse <- isTRUE(output_sparse)
   }
 
   if(!is.null(quantile_mat)) {
@@ -185,10 +194,14 @@ simu_new <- function(sce,
             corr_gene <- colnames(cor.mat)[which(corr_gene_idx)]
             if(length(corr_gene)!=0) {
               new_mvn_important <- sampleMVN(n = curr_ncell,
-                                             Sigma = cor.mat[corr_gene, corr_gene],
+                                             Sigma = cor.mat[corr_gene, corr_gene, drop = FALSE],
                                              n_cores = n_cores,
                                              fastmvn = fastmvn)
-            
+              if (is.null(dim(new_mvn_important))) {
+                new_mvn_important <- matrix(new_mvn_important, ncol = length(corr_gene))
+              } else {
+                new_mvn_important <- as.matrix(new_mvn_important)
+              }
             colnames(new_mvn_important) <- corr_gene} else {
               new_mvn_important <- NULL
             }
@@ -272,34 +285,34 @@ simu_new <- function(sce,
     cell_names = cell_names,
     n_cores = n_cores,
     parallelization = parallelization,
-    BPPARAM = BPPARAM
+    BPPARAM = BPPARAM,
+    block_size = sim_block_size,
+    output_sparse = output_sparse
   )
 
   if(length(qc_gene_idx) < dim(sce)[1]){
-    temp_count <- matrix(0, total_cells, dim(sce)[1])
-    rownames(temp_count) <- cell_names
-    colnames(temp_count) <- rownames(sce)
-    temp_count[rownames(new_count),colnames(new_count)] <- new_count
+    if (isTRUE(output_sparse)) {
+      temp_count <- Matrix::Matrix(0, nrow = dim(sce)[1], ncol = total_cells, sparse = TRUE)
+    } else {
+      temp_count <- matrix(0, nrow = dim(sce)[1], ncol = total_cells)
+    }
+    rownames(temp_count) <- rownames(sce)
+    colnames(temp_count) <- cell_names
+    temp_count[rownames(new_count), colnames(new_count)] <- new_count
     new_count <- temp_count
   }
-  new_count <- as.matrix(t(new_count))
 
-  if(nonnegative) new_count[new_count < 0] <- 0
-
-  if(nonzerovar) {
-    row_vars <- matrixStats::rowVars(new_count[qc_gene_idx,])
-    if(sum(row_vars == 0) > 0) {
-      message("Some genes have zero variance. Replace a random one with 1.")
-      row_vars_index <- which(row_vars == 0)
-      col_index <- seq_len(dim(new_count)[2])
-      for(i in row_vars_index) {
-        new_count[i, sample(col_index, 1)] <- 1
-      }
+  if(nonnegative) {
+    if (methods::is(new_count, "sparseMatrix")) {
+      new_count@x[new_count@x < 0] <- 0
+      new_count <- Matrix::drop0(new_count)
+    } else {
+      new_count[new_count < 0] <- 0
     }
   }
-  new_count <- as.matrix(new_count)
-  if(methods::is(SummarizedExperiment::assay(sce, assay_use), "sparseMatrix")){
-    new_count<- Matrix::Matrix(new_count, sparse = TRUE)
+
+  if(nonzerovar) {
+    new_count <- .scdesign3_fix_zero_variance_rows(new_count, qc_gene_idx)
   }
 
   return(new_count)
@@ -360,7 +373,8 @@ simu_new <- function(sce,
                                           n_cores,
                                           parallelization,
                                           BPPARAM,
-                                          block_size = 256L) {
+                                          block_size = 256L,
+                                          output_sparse = FALSE) {
   block_size <- as.integer(block_size[1L])
   if (!is.finite(block_size) || block_size < 1L) {
     block_size <- 256L
@@ -373,7 +387,10 @@ simu_new <- function(sce,
     parallelization <- "mcmapply"
   }
   if (length(gene_idx) == 0L) {
-    return(matrix(0, nrow = length(cell_names), ncol = 0L, dimnames = list(cell_names, NULL)))
+    if (isTRUE(output_sparse)) {
+      return(Matrix::Matrix(0, nrow = 0L, ncol = length(cell_names), sparse = TRUE))
+    }
+    return(matrix(0, nrow = 0L, ncol = length(cell_names), dimnames = list(NULL, cell_names)))
   }
   gene_pos <- seq_along(gene_idx)
   blocks <- split(gene_pos, ceiling(gene_pos / block_size))
@@ -414,16 +431,26 @@ simu_new <- function(sce,
   }
 
   if (parallelization != "bpmapply" && !(parallelization == "pbmcmapply" && n_cores > 1L) && n_cores <= 1L) {
-    out <- matrix(
-      0,
-      nrow = nrow(quantile_mat),
-      ncol = length(gene_idx),
-      dimnames = list(cell_names, colnames(mean_mat)[gene_idx])
-    )
-    for (pos in blocks) {
-      out[, pos] <- block_fun(pos)
+    if (isTRUE(output_sparse)) {
+      out_blocks <- lapply(blocks, function(pos) {
+        block <- Matrix::Matrix(t(block_fun(pos)), sparse = TRUE)
+        rownames(block) <- colnames(mean_mat)[gene_idx[pos]]
+        colnames(block) <- cell_names
+        block
+      })
+      return(do.call(rbind, out_blocks))
+    } else {
+      out <- matrix(
+        0,
+        nrow = length(gene_idx),
+        ncol = nrow(quantile_mat),
+        dimnames = list(colnames(mean_mat)[gene_idx], cell_names)
+      )
+      for (pos in blocks) {
+        out[pos, ] <- t(block_fun(pos))
+      }
+      return(out)
     }
-    return(out)
   }
 
   block_results <- if (parallelization == "bpmapply") {
@@ -442,10 +469,42 @@ simu_new <- function(sce,
     lapply(blocks, block_fun)
   }
 
-  out <- do.call(cbind, block_results)
-  rownames(out) <- cell_names
-  colnames(out) <- colnames(mean_mat)[gene_idx]
+  if (isTRUE(output_sparse)) {
+    sparse_blocks <- lapply(seq_along(blocks), function(i) {
+      pos <- blocks[[i]]
+      block <- Matrix::Matrix(t(block_results[[i]]), sparse = TRUE)
+      rownames(block) <- colnames(mean_mat)[gene_idx[pos]]
+      colnames(block) <- cell_names
+      block
+    })
+    return(do.call(rbind, sparse_blocks))
+  }
+  out <- do.call(rbind, lapply(block_results, t))
+  rownames(out) <- colnames(mean_mat)[gene_idx]
+  colnames(out) <- cell_names
   out
+}
+
+.scdesign3_fix_zero_variance_rows <- function(new_count, qc_gene_idx) {
+  if (methods::is(new_count, "sparseMatrix")) {
+    row_means <- Matrix::rowMeans(new_count[qc_gene_idx, , drop = FALSE])
+    row_sq_means <- Matrix::rowMeans(new_count[qc_gene_idx, , drop = FALSE]^2)
+    row_vars <- as.numeric(row_sq_means - row_means^2)
+  } else {
+    row_vars <- matrixStats::rowVars(new_count[qc_gene_idx, , drop = FALSE])
+  }
+  if(sum(row_vars == 0) > 0) {
+    message("Some genes have zero variance. Replace a random one with 1.")
+    row_vars_index <- qc_gene_idx[which(row_vars == 0)]
+    col_index <- seq_len(dim(new_count)[2])
+    for(i in row_vars_index) {
+      new_count[i, sample(col_index, 1)] <- 1
+    }
+  }
+  if (methods::is(new_count, "sparseMatrix")) {
+    new_count <- Matrix::drop0(new_count)
+  }
+  new_count
 }
 
 .scdesign3_qfamily_matrix <- function(y, p, mu, sigma, zero) {

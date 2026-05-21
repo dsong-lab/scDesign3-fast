@@ -34,6 +34,9 @@ scdesign3(
   important_feature = "all",
   nonnegative = TRUE,
   nonzerovar = FALSE,
+  sim_block_size = 256L,
+  output_sparse = NULL,
+  sim_cell_block_size = getOption("scDesign3.sim_cell_block_size", 50000L),
   return_model = FALSE,
   simplify = FALSE,
   parallelization = "mcmapply",
@@ -110,6 +113,12 @@ The default value is "all" (a special string which means no filtering).}
 \item{nonnegative}{A logical variable. If TRUE, values < 0 in the synthetic data will be converted to 0. Default is TRUE (since the expression matrix is nonnegative).}
 
 \item{nonzerovar}{A logical variable. If TRUE, for any gene with zero variance, a cell will be replaced with 1. This is designed for avoiding potential errors, for example, PCA. Default is FALSE.}
+
+\item{sim_block_size}{Number of genes to simulate per bounded working block.}
+
+\item{output_sparse}{If TRUE, return sparse simulated counts and avoid dense final materialization. The default follows whether the input assay is sparse.}
+
+\item{sim_cell_block_size}{Number of cells per simulation block. For sparse atlas-scale inputs, parameter extraction and simulation are streamed by cell block to avoid full dense cell-by-gene parameter matrices.}
 
 \item{return_model}{A logic variable. If TRUE, the marginal models and copula models will be returned. Default is FALSE.}
 

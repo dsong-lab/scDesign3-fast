@@ -22,7 +22,9 @@ simu_new(
   important_feature = "all",
   parallelization = "mcmapply",
   BPPARAM = NULL,
-  filtered_gene
+  filtered_gene,
+  sim_block_size = 256L,
+  output_sparse = NULL
 )
 }
 \arguments{
@@ -72,6 +74,10 @@ this parameter must be NULL. When the parameter parallelization = 'bpmapply',  t
 
 \item{filtered_gene}{A vector or NULL which contains genes that are excluded in the marginal and copula fitting 
 steps because these genes only express in less than two cells. This can be obtain from  \code{\link{construct_data}}}
+
+\item{sim_block_size}{Number of genes to simulate per bounded working block.}
+
+\item{output_sparse}{If TRUE, return a sparse feature-by-cell matrix and avoid dense final materialization. The default follows whether the input assay is sparse.}
 }
 \value{
 A feature by cell matrix of the new simulated count (expression) matrix or sparse matrix.

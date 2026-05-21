@@ -111,3 +111,47 @@ test_that("simu_new falls back to positional quantile alignment when names do no
 
   expect_equal(out, expected)
 })
+
+test_that("simu_new preserves sparse output without dense final expansion", {
+  skip_if_not_installed("SingleCellExperiment")
+  skip_if_not_installed("Matrix")
+
+  n <- 6L
+  g <- 5L
+  gene_names <- paste0("gene", seq_len(g))
+  cell_names <- paste0("cell", seq_len(n))
+  sce <- SingleCellExperiment::SingleCellExperiment(
+    assays = list(counts = Matrix::Matrix(0, nrow = g, ncol = n, sparse = TRUE,
+                                          dimnames = list(gene_names, cell_names)))
+  )
+  mean_mat <- matrix(2, nrow = n, ncol = g, dimnames = list(cell_names, gene_names))
+  sigma_mat <- matrix(1, nrow = n, ncol = g, dimnames = dimnames(mean_mat))
+  zero_mat <- matrix(0, nrow = n, ncol = g, dimnames = dimnames(mean_mat))
+  quantile_mat <- matrix(
+    seq(0.1, 0.9, length.out = n * 3L),
+    nrow = n,
+    dimnames = list(cell_names, gene_names[1:3])
+  )
+  input_data <- data.frame(corr_group = rep(1, n), row.names = cell_names)
+
+  out <- simu_new(
+    sce = sce,
+    mean_mat = mean_mat,
+    sigma_mat = sigma_mat,
+    zero_mat = zero_mat,
+    quantile_mat = quantile_mat,
+    copula_list = NULL,
+    n_cores = 1,
+    family_use = "poisson",
+    input_data = input_data,
+    new_covariate = input_data,
+    filtered_gene = gene_names[4:5],
+    sim_block_size = 2L
+  )
+
+  expected <- matrix(0, nrow = g, ncol = n, dimnames = list(gene_names, cell_names))
+  expected[gene_names[1:3], ] <- t(stats::qpois(quantile_mat, lambda = mean_mat[, gene_names[1:3]]))
+
+  expect_s4_class(out, "sparseMatrix")
+  expect_equal(as.matrix(out), expected)
+})

@@ -98,8 +98,11 @@ NULL
     }))
   }
 
-  counts_fit <- as.matrix(count_mat[, fit_idx, drop = FALSE])
-  storage.mode(counts_fit) <- "double"
+  counts_fit <- count_mat[, fit_idx, drop = FALSE]
+  if (!methods::is(counts_fit, "sparseMatrix")) {
+    counts_fit <- as.matrix(counts_fit)
+    storage.mode(counts_fit) <- "double"
+  }
   rhs_formula <- stats::as.formula(paste0("~", mu_formula))
   full_formula <- stats::as.formula(paste0(predictor, "~", mu_formula))
   family_obj <- .scdesign3_scglm_family(family_key)
@@ -183,7 +186,7 @@ NULL
     }
 
     fit_col <- fit_col + 1L
-    y <- counts_fit[, fit_col]
+    y <- as.numeric(counts_fit[, fit_col])
     coef <- fit$coefficients[, fit_col]
     eta <- as.vector(x %*% coef)
     mu <- as.vector(fit$family$linkinv(eta))
