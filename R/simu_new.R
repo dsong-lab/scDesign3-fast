@@ -185,18 +185,40 @@ simu_new <- function(sce,
         if(curr_ncell == 0) {
           new_mvu <- NULL
         } else {
-          if (methods::is(cor.mat, "matrix") | methods::is(cor.mat, "dsCMatrix")) {
+          if (inherits(cor.mat, "scdesign3_gaussian_fast_copula")) {
+            new_mvu <- sampleMVN(
+              n = curr_ncell,
+              Sigma = cor.mat,
+              n_cores = n_cores,
+              fastmvn = fastmvn
+            )
+            new_mvu <- as.matrix(new_mvu)
+            new_mvu <- new_mvu[, qc_gene_names, drop = FALSE]
+            rownames(new_mvu) <- curr_ncell_idx
+          } else if (methods::is(cor.mat, "matrix") | methods::is(cor.mat, "dsCMatrix")) {
             #message(paste0("Group ", group_index, " Start"))
             
             #message("Sample MVN")
             #sample from mvn for important genes only
-            corr_gene_idx <- apply(cor.mat, 2, function(x) length(which(x < 1e-5)) != length(x)-1)
-            corr_gene <- colnames(cor.mat)[which(corr_gene_idx)]
+            cache_names <- attr(cor.mat, "scdesign3_gaussian_factor_names", exact = TRUE)
+            if (!is.null(cache_names)) {
+              corr_gene <- cache_names
+            } else {
+              corr_gene <- .scdesign3_correlated_gene_names(cor.mat)
+            }
+            corr_gene_idx <- colnames(cor.mat) %in% corr_gene
             if(length(corr_gene)!=0) {
-              new_mvn_important <- sampleMVN(n = curr_ncell,
-                                             Sigma = cor.mat[corr_gene, corr_gene, drop = FALSE],
-                                             n_cores = n_cores,
-                                             fastmvn = fastmvn)
+              sigma_sample <- if (!is.null(cache_names)) {
+                cor.mat
+              } else {
+                cor.mat[corr_gene, corr_gene, drop = FALSE]
+              }
+              new_mvn_important <- sampleMVN(
+                n = curr_ncell,
+                Sigma = sigma_sample,
+                n_cores = n_cores,
+                fastmvn = fastmvn
+              )
               if (is.null(dim(new_mvn_important))) {
                 new_mvn_important <- matrix(new_mvn_important, ncol = length(corr_gene))
               } else {

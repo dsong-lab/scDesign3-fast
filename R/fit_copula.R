@@ -13,6 +13,18 @@
 #' @param marginal_list A list of fitted regression models from \code{\link{fit_marginal}}.
 #' @param family_use A string or a vector of strings of the marginal distribution. Must be one of 'poisson', 'nb', 'zip', 'zinb' or 'gaussian'.
 #' @param copula A string of the copula choice. Must be one of 'gaussian' or 'vine'. Default is 'gaussian'. Note that vine copula may have better modeling of high-dimensions, but can be very slow when features are >1000.
+#' @param gaussian_copula A string selecting the Gaussian copula backend. Must be
+#' one of \code{"dense"} or \code{"block_factor"}. \code{"dense"} keeps the
+#' original dense correlation backend. \code{"block_factor"} fits a low-rank
+#' global factor plus dense residual covariance blocks.
+#' @param gaussian_copula_rank Global factor rank for
+#' \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_block_size Maximum residual block size for
+#' \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_block_shrinkage Diagonal shrinkage applied to residual
+#' block covariances for \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_sketch_size Number of cells used to cluster genes into
+#' residual blocks for \code{gaussian_copula = "block_factor"}.
 #' @param DT A logic variable. If TRUE, perform the distributional transformation
 #' to make the discrete data 'continuous'. This is useful for discrete distributions (e.g., Poisson, NB).
 #' Default is TRUE. Note that for continuous data (e.g., Gaussian), DT does not make sense and should be set as FALSE.
@@ -83,6 +95,11 @@ fit_copula <- function(sce,
                        marginal_list,
                        family_use,
                        copula = 'gaussian',
+                       gaussian_copula = c("dense", "block_factor"),
+                       gaussian_copula_rank = 50L,
+                       gaussian_copula_block_size = 500L,
+                       gaussian_copula_block_shrinkage = 0.05,
+                       gaussian_copula_sketch_size = 1000L,
                        DT = TRUE,
                        pseudo_obs = FALSE,
                        epsilon = 1e-6,
@@ -93,6 +110,7 @@ fit_copula <- function(sce,
                        n_cores,
                        parallelization = "mcmapply",
                        BPPARAM = NULL) {
+  gaussian_copula <- match.arg(gaussian_copula)
 
   if(empirical_quantile == TRUE) {
       message("Use the empirical quantile matrices from the original data; do not fit copula. This will make the result FIXED.")
@@ -248,14 +266,20 @@ fit_copula <- function(sce,
           #message(paste0("Group ", group_index, " Start"))
           curr_mat <- newmat[curr_index, , drop = FALSE]
           #message("Cal MVN")
-          cor.mat <- cal_cor(
-            curr_mat,
+          cor.mat <- .scdesign3_fit_gaussian_copula(
+            norm.mat = curr_mat,
             important_feature = important_feature,
+            gaussian_copula = gaussian_copula,
+            gaussian_copula_rank = gaussian_copula_rank,
+            gaussian_copula_block_size = gaussian_copula_block_size,
+            gaussian_copula_block_shrinkage = gaussian_copula_block_shrinkage,
+            gaussian_copula_sketch_size = gaussian_copula_sketch_size,
             if_sparse = if_sparse,
             correlation_function = correlation_function,
             lambda = 0.05,
             tol = 1e-8,
-            ind = ind
+            ind = ind,
+            score_mat = curr_mat
           )
           
           #message("Sample MVN")
@@ -370,7 +394,9 @@ cal_cor <- function(norm.mat,
                     if_sparse = FALSE,
                     lambda = 0.05,
                     tol = 1e-8,
-                    ind = FALSE) {
+                    ind = FALSE,
+                    score_mat = NULL,
+                    cache_factor = TRUE) {
   if (ind) {
     cor.mat <- diag(rep(1, dim(norm.mat)[2]))
     return(cor.mat)
@@ -379,7 +405,11 @@ cal_cor <- function(norm.mat,
     cor.mat <- diag(rep(1, dim(norm.mat)[2]))
     rownames(cor.mat) <- colnames(norm.mat)
     colnames(cor.mat) <- colnames(norm.mat)
-    important.mat <- norm.mat[,which(important_feature)]
+    important_names <- colnames(norm.mat)[which(important_feature)]
+    important.mat <- norm.mat[, important_names, drop = FALSE]
+    if (ncol(important.mat) == 0L) {
+      return(cor.mat)
+    }
     if (if_sparse) {
       important_cor.mat <- sparse_cov(important.mat, 
                                method = 'qiu', 
@@ -395,6 +425,13 @@ cal_cor <- function(norm.mat,
       important_cor.mat[is.na(important_cor.mat)] <- 0
     }
     cor.mat[rownames(important_cor.mat), colnames(important_cor.mat)] <- important_cor.mat
+    if (isTRUE(cache_factor) && !isTRUE(if_sparse)) {
+      cor.mat <- .scdesign3_cache_gaussian_copula(
+        cor.mat = cor.mat,
+        important_cor.mat = important_cor.mat,
+        score_mat = score_mat
+      )
+    }
   }
 
   n <- dim(cor.mat)[1]
@@ -424,6 +461,47 @@ cal_cor <- function(norm.mat,
   cor.mat <- methods::as(methods::as(methods::as(cor.mat, "dMatrix"), "symmetricMatrix"), "CsparseMatrix")
   }
   cor.mat
+}
+
+.scdesign3_fit_gaussian_copula <- function(norm.mat,
+                                           important_feature,
+                                           gaussian_copula = c("dense", "block_factor"),
+                                           gaussian_copula_rank = 50L,
+                                           gaussian_copula_block_size = 500L,
+                                           gaussian_copula_block_shrinkage = 0.05,
+                                           gaussian_copula_sketch_size = 1000L,
+                                           correlation_function = "default",
+                                           if_sparse = FALSE,
+                                           lambda = 0.05,
+                                           tol = 1e-8,
+                                           ind = FALSE,
+                                           score_mat = NULL,
+                                           cache_factor = TRUE) {
+  gaussian_copula <- match.arg(gaussian_copula)
+  if (identical(gaussian_copula, "dense") || isTRUE(if_sparse) || isTRUE(ind)) {
+    return(cal_cor(
+      norm.mat = norm.mat,
+      important_feature = important_feature,
+      correlation_function = correlation_function,
+      if_sparse = if_sparse,
+      lambda = lambda,
+      tol = tol,
+      ind = ind,
+      score_mat = score_mat,
+      cache_factor = cache_factor
+    ))
+  }
+
+  .scdesign3_fit_gaussian_fast_copula(
+    norm.mat = norm.mat,
+    important_feature = important_feature,
+    gaussian_copula = gaussian_copula,
+    rank = gaussian_copula_rank,
+    block_size = gaussian_copula_block_size,
+    block_shrinkage = gaussian_copula_block_shrinkage,
+    sketch_size = gaussian_copula_sketch_size,
+    score_mat = score_mat
+  )
 }
 
 ## Convert marginal distributions to standard normals.
@@ -820,19 +898,20 @@ cal_aic <- function(norm.mat,
                     ind) {
   if (ind) {
     copula.aic = 0
+  } else if (inherits(cor.mat, "scdesign3_gaussian_fast_copula")) {
+    cached <- cor.mat$score$aic
+    if (!is.null(cached)) {
+      return(cached)
+    }
+    score <- .scdesign3_gaussian_fast_copula_score(norm.mat = norm.mat, copula = cor.mat)
+    copula.aic <- -2 * score$loglik + 2 * score$npar
   } else {
-    cor.mat <- as.matrix(cor.mat)
-    copula.nop <- (as.integer(sum(cor.mat != 0)) - dim(cor.mat)[1]) / 2
-
-    copula.aic <-
-      -2 * (sum(
-        mvtnorm::dmvnorm(
-          x = norm.mat,
-          mean = rep(0, dim(cor.mat)[1]),
-          sigma = cor.mat,
-          log = TRUE
-        )
-      ) - sum(rowSums(stats::dnorm(norm.mat, log = TRUE)))) + 2 * copula.nop
+    cached <- attr(cor.mat, "scdesign3_gaussian_aic", exact = TRUE)
+    if (!is.null(cached)) {
+      return(cached)
+    }
+    score <- .scdesign3_gaussian_copula_score(norm.mat = norm.mat, cor.mat = cor.mat)
+    copula.aic <- -2 * score$loglik + 2 * score$npar
   }
 
   copula.aic
@@ -845,22 +924,372 @@ cal_bic <- function(norm.mat,
   n_obs <- dim(norm.mat)[1]
   if (ind) {
     copula.bic = 0
+  } else if (inherits(cor.mat, "scdesign3_gaussian_fast_copula")) {
+    cached <- cor.mat$score$bic
+    if (!is.null(cached)) {
+      return(cached)
+    }
+    score <- .scdesign3_gaussian_fast_copula_score(norm.mat = norm.mat, copula = cor.mat)
+    copula.bic <- -2 * score$loglik + log(n_obs) * score$npar
   } else {
-    cor.mat <- as.matrix(cor.mat)
-    copula.nop <- (as.integer(sum(cor.mat != 0)) - dim(cor.mat)[1]) / 2
-
-    copula.bic <-
-      -2 * (sum(
-        mvtnorm::dmvnorm(
-          x = norm.mat,
-          mean = rep(0, dim(cor.mat)[1]),
-          sigma = cor.mat,
-          log = TRUE
-        )
-      ) - sum(rowSums(stats::dnorm(norm.mat, log = TRUE)))) + log(n_obs) * copula.nop
+    cached <- attr(cor.mat, "scdesign3_gaussian_bic", exact = TRUE)
+    if (!is.null(cached)) {
+      return(cached)
+    }
+    score <- .scdesign3_gaussian_copula_score(norm.mat = norm.mat, cor.mat = cor.mat)
+    copula.bic <- -2 * score$loglik + log(n_obs) * score$npar
   }
 
   copula.bic
+}
+
+.scdesign3_cache_gaussian_copula <- function(cor.mat,
+                                             important_cor.mat,
+                                             score_mat = NULL) {
+  important_cor.mat <- as.matrix(important_cor.mat)
+  important_names <- colnames(important_cor.mat)
+  if (is.null(important_names)) {
+    important_names <- rownames(important_cor.mat)
+  }
+  if (is.null(important_names)) {
+    important_names <- colnames(cor.mat)[seq_len(ncol(important_cor.mat))]
+  }
+
+  cache <- .scdesign3_gaussian_factor_cache(important_cor.mat, names = important_names)
+  attr(cor.mat, "scdesign3_gaussian_factor") <- cache
+  attr(cor.mat, "scdesign3_gaussian_factor_names") <- important_names
+  attr(cor.mat, "scdesign3_gaussian_npar") <-
+    (as.integer(sum(important_cor.mat != 0)) - ncol(important_cor.mat)) / 2
+
+  if (!is.null(score_mat)) {
+    score <- .scdesign3_gaussian_copula_score(
+      norm.mat = score_mat,
+      cor.mat = cor.mat,
+      cache = cache
+    )
+    attr(cor.mat, "scdesign3_gaussian_loglik") <- score$loglik
+    attr(cor.mat, "scdesign3_gaussian_aic") <- -2 * score$loglik + 2 * score$npar
+    attr(cor.mat, "scdesign3_gaussian_bic") <- -2 * score$loglik + log(nrow(score_mat)) * score$npar
+  }
+
+  cor.mat
+}
+
+.scdesign3_gaussian_factor_cache <- function(sigma,
+                                             names = colnames(sigma),
+                                             tol = sqrt(.Machine$double.eps)) {
+  sigma <- as.matrix(sigma)
+  sigma <- (sigma + t(sigma)) / 2
+  chol_root <- tryCatch(chol(sigma), error = function(e) NULL)
+  if (!is.null(chol_root)) {
+    colnames(chol_root) <- names
+    rownames(chol_root) <- names
+    return(list(
+      root = chol_root,
+      type = "chol",
+      logdet = 2 * sum(log(diag(chol_root))),
+      names = names
+    ))
+  }
+
+  ev <- eigen(sigma, symmetric = TRUE)
+  values <- ev$values
+  max_value <- max(abs(values), 1)
+  values <- pmax(values, tol * max_value)
+  root <- t(ev$vectors %*% (t(ev$vectors) * sqrt(values)))
+  colnames(root) <- names
+  rownames(root) <- names
+  list(
+    root = root,
+    type = "eigen",
+    vectors = ev$vectors,
+    values = values,
+    logdet = sum(log(values)),
+    names = names
+  )
+}
+
+.scdesign3_gaussian_copula_score <- function(norm.mat,
+                                             cor.mat,
+                                             cache = attr(cor.mat, "scdesign3_gaussian_factor", exact = TRUE)) {
+  cor.mat <- as.matrix(cor.mat)
+  if (is.null(cache)) {
+    cache_names <- .scdesign3_correlated_gene_names(cor.mat)
+    if (length(cache_names) == 0L) {
+      return(list(loglik = 0, npar = 0))
+    }
+    cache <- .scdesign3_gaussian_factor_cache(
+      sigma = cor.mat[cache_names, cache_names, drop = FALSE],
+      names = cache_names
+    )
+  }
+  cache_names <- cache$names
+  if (length(cache_names) <= 1L) {
+    return(list(loglik = 0, npar = 0))
+  }
+
+  z <- as.matrix(norm.mat[, cache_names, drop = FALSE])
+  inv_scaled <- if (identical(cache$type, "chol")) {
+    t(backsolve(cache$root, t(z), transpose = TRUE))
+  } else {
+    rotated <- z %*% cache$vectors
+    sweep(rotated, 2L, sqrt(cache$values), "/")
+  }
+  quad <- sum(inv_scaled^2)
+  marginal_quad <- sum(z^2)
+  loglik <- -0.5 * nrow(z) * cache$logdet - 0.5 * (quad - marginal_quad)
+  npar <- attr(cor.mat, "scdesign3_gaussian_npar", exact = TRUE)
+  if (is.null(npar)) {
+    sigma <- cor.mat[cache_names, cache_names, drop = FALSE]
+    npar <- (as.integer(sum(sigma != 0)) - ncol(sigma)) / 2
+  }
+  list(loglik = loglik, npar = npar)
+}
+
+.scdesign3_correlated_gene_names <- function(cor.mat, tol = 1e-5) {
+  if (is.null(cor.mat) || ncol(cor.mat) == 0L) {
+    return(character())
+  }
+  mat <- as.matrix(cor.mat)
+  diag(mat) <- 0
+  colnames(cor.mat)[matrixStats::colMaxs(abs(mat), na.rm = TRUE) > tol]
+}
+
+.scdesign3_fit_gaussian_fast_copula <- function(norm.mat,
+                                                important_feature,
+                                                gaussian_copula = "block_factor",
+                                                rank = 50L,
+                                                block_size = 500L,
+                                                block_shrinkage = 0.05,
+                                                sketch_size = 1000L,
+                                                score_mat = NULL) {
+  gaussian_copula <- match.arg(gaussian_copula, "block_factor")
+  norm.mat <- as.matrix(norm.mat)
+  all_names <- colnames(norm.mat)
+  if (is.null(all_names)) {
+    all_names <- paste0("gene", seq_len(ncol(norm.mat)))
+    colnames(norm.mat) <- all_names
+  }
+  important_names <- all_names[which(important_feature)]
+  if (length(important_names) == 0L) {
+    out <- list(
+      method = "block_factor",
+      all_names = all_names,
+      important_names = character(),
+      load = matrix(0, nrow = 0L, ncol = 0L),
+      diag_var = numeric(),
+      blocks = list(),
+      block_sigmas = list(),
+      block_caches = list(),
+      logdet = 0,
+      npar = 0,
+      score = list(loglik = 0, aic = 0, bic = 0)
+    )
+    class(out) <- "scdesign3_gaussian_fast_copula"
+    return(out)
+  }
+
+  z <- .scdesign3_scale_finite(norm.mat[, important_names, drop = FALSE])
+  rank <- suppressWarnings(as.integer(rank[1L]))
+  if (!is.finite(rank) || rank < 1L) {
+    rank <- 1L
+  }
+  rank <- min(rank, ncol(z) - 1L, nrow(z) - 1L)
+  if (rank < 1L) {
+    rank <- 1L
+  }
+  block_size <- suppressWarnings(as.integer(block_size[1L]))
+  if (!is.finite(block_size) || block_size < 2L) {
+    block_size <- min(500L, ncol(z))
+  }
+  sketch_size <- suppressWarnings(as.integer(sketch_size[1L]))
+  if (!is.finite(sketch_size) || sketch_size < 2L) {
+    sketch_size <- min(1000L, nrow(z))
+  }
+  block_shrinkage <- as.numeric(block_shrinkage[1L])
+  if (!is.finite(block_shrinkage) || block_shrinkage < 0 || block_shrinkage > 1) {
+    block_shrinkage <- 0.05
+  }
+
+  n <- nrow(z)
+  sv <- if (rank < min(dim(z)) / 2) {
+    irlba::irlba(z / sqrt(max(n - 1L, 1L)), nv = rank, nu = 0)
+  } else {
+    full <- svd(z / sqrt(max(n - 1L, 1L)), nu = 0, nv = rank)
+    list(v = full$v[, seq_len(rank), drop = FALSE], d = full$d[seq_len(rank)])
+  }
+  load <- sweep(sv$v, 2L, sv$d, "*")
+
+  blocks <- .scdesign3_make_gaussian_blocks(z, loadings = sv$v, block_size = block_size, sketch_size = sketch_size)
+  z_res <- z - (z %*% sv$v) %*% t(sv$v)
+  block_sigmas <- vector("list", length(blocks))
+  diag_block <- numeric(ncol(z))
+  for (b in seq_along(blocks)) {
+    idx <- blocks[[b]]
+    sig <- crossprod(z_res[, idx, drop = FALSE]) / max(n - 1L, 1L)
+    sig <- .scdesign3_regularize_cov(sig, ridge = block_shrinkage)
+    block_sigmas[[b]] <- sig
+    diag_block[idx] <- diag(sig)
+  }
+  diag_total <- rowSums(load^2) + diag_block
+  scale <- 1 / sqrt(pmax(diag_total, 1e-8))
+  for (b in seq_along(blocks)) {
+    idx <- blocks[[b]]
+    block_sigmas[[b]] <- block_sigmas[[b]] * tcrossprod(scale[idx])
+  }
+  out <- list(
+    method = "block_factor",
+    all_names = all_names,
+    important_names = important_names,
+    load = load * scale,
+    diag_var = numeric(),
+    blocks = blocks,
+    block_sigmas = block_sigmas,
+    block_caches = list(),
+    rank = ncol(load),
+    block_size = block_size,
+    block_shrinkage = block_shrinkage,
+    sketch_size = sketch_size
+  )
+  out <- .scdesign3_prepare_gaussian_fast_copula(out)
+
+  if (!is.null(score_mat)) {
+    score <- .scdesign3_gaussian_fast_copula_score(norm.mat = score_mat, copula = out)
+    out$score <- list(
+      loglik = score$loglik,
+      aic = -2 * score$loglik + 2 * score$npar,
+      bic = -2 * score$loglik + log(nrow(score_mat)) * score$npar
+    )
+  } else {
+    out$score <- list()
+  }
+  class(out) <- "scdesign3_gaussian_fast_copula"
+  out
+}
+
+.scdesign3_scale_finite <- function(x) {
+  x <- scale(as.matrix(x), center = TRUE, scale = TRUE)
+  x[!is.finite(x)] <- 0
+  storage.mode(x) <- "double"
+  x
+}
+
+.scdesign3_regularize_cov <- function(sigma, ridge = 1e-6) {
+  sigma <- as.matrix(sigma)
+  sigma <- (sigma + t(sigma)) / 2
+  diag(sigma) <- pmax(diag(sigma), 1e-8)
+  (1 - ridge) * sigma + ridge * diag(diag(sigma), nrow(sigma))
+}
+
+.scdesign3_make_gaussian_blocks <- function(z, loadings, block_size, sketch_size) {
+  p <- ncol(z)
+  if (p <= block_size) {
+    return(list(seq_len(p)))
+  }
+  k <- max(1L, ceiling(p / block_size))
+  rows <- sample.int(nrow(z), size = min(sketch_size, nrow(z)))
+  z_sketch <- .scdesign3_scale_finite(z[rows, , drop = FALSE])
+  cor_sketch <- crossprod(z_sketch) / max(nrow(z_sketch) - 1L, 1L)
+  cor_sketch[!is.finite(cor_sketch)] <- 0
+  diag(cor_sketch) <- 1
+  d <- stats::as.dist(1 - abs(cor_sketch))
+  hc <- stats::hclust(d, method = "average")
+  cl <- stats::cutree(hc, k = k)
+  .scdesign3_split_gaussian_blocks(split(seq_len(p), cl), loadings, block_size)
+}
+
+.scdesign3_split_gaussian_blocks <- function(raw, loadings, block_size) {
+  blocks <- list()
+  for (idx in raw) {
+    idx <- as.integer(idx)
+    if (length(idx) <= block_size) {
+      blocks[[length(blocks) + 1L]] <- idx
+    } else {
+      ord <- idx[order(loadings[idx, 1L])]
+      chunks <- split(ord, ceiling(seq_along(ord) / block_size))
+      blocks <- c(blocks, chunks)
+    }
+  }
+  blocks
+}
+
+.scdesign3_prepare_gaussian_fast_copula <- function(copula) {
+  block_caches <- lapply(copula$block_sigmas, .scdesign3_gaussian_factor_cache)
+  load <- copula$load
+  r <- ncol(load)
+  logdet_d <- sum(vapply(block_caches, `[[`, numeric(1), "logdet"))
+  if (r == 0L) {
+    copula$block_caches <- block_caches
+    copula$logdet <- logdet_d
+    copula$npar <- sum(vapply(copula$block_sigmas, function(x) ncol(x) * (ncol(x) + 1) / 2, numeric(1)))
+    return(copula)
+  }
+
+  dinv_load <- matrix(0, nrow(load), r)
+  for (b in seq_along(copula$blocks)) {
+    idx <- copula$blocks[[b]]
+    cache <- block_caches[[b]]
+    if (identical(cache$type, "chol")) {
+      dinv_load[idx, ] <- backsolve(cache$root, forwardsolve(t(cache$root), load[idx, , drop = FALSE]))
+    } else {
+      dinv_load[idx, ] <- cache$vectors %*% (t(cache$vectors) %*% load[idx, , drop = FALSE] / cache$values)
+    }
+  }
+  mid <- diag(1, r) + crossprod(load, dinv_load)
+  mid_chol <- chol((mid + t(mid)) / 2)
+  copula$block_caches <- block_caches
+  copula$dinv_load <- dinv_load
+  copula$mid_chol <- mid_chol
+  copula$logdet <- logdet_d + 2 * sum(log(diag(mid_chol)))
+  block_npar <- sum(vapply(copula$block_sigmas, function(x) ncol(x) * (ncol(x) + 1) / 2, numeric(1)))
+  copula$npar <- nrow(load) * ncol(load) + block_npar
+  copula
+}
+
+.scdesign3_gaussian_fast_block_dinv_mat <- function(z, copula) {
+  out <- matrix(0, nrow(z), ncol(z))
+  for (b in seq_along(copula$blocks)) {
+    idx <- copula$blocks[[b]]
+    cache <- copula$block_caches[[b]]
+    zb <- z[, idx, drop = FALSE]
+    if (identical(cache$type, "chol")) {
+      out[, idx] <- t(backsolve(cache$root, forwardsolve(t(cache$root), t(zb))))
+    } else {
+      out[, idx] <- (zb %*% cache$vectors) %*% (t(cache$vectors) / cache$values)
+    }
+  }
+  out
+}
+
+.scdesign3_gaussian_fast_copula_score <- function(norm.mat, copula) {
+  if (length(copula$important_names) == 0L) {
+    return(list(loglik = 0, npar = 0))
+  }
+  z <- .scdesign3_scale_finite(as.matrix(norm.mat[, copula$important_names, drop = FALSE]))
+  dz <- .scdesign3_gaussian_fast_block_dinv_mat(z, copula)
+  a <- dz %*% copula$load
+  tmp <- t(backsolve(copula$mid_chol, t(a), transpose = TRUE))
+  quad <- sum(z * dz) - sum(tmp^2)
+  loglik <- -0.5 * nrow(z) * copula$logdet - 0.5 * (quad - sum(z^2))
+  list(loglik = loglik, npar = copula$npar)
+}
+
+.scdesign3_sample_gaussian_fast_copula <- function(n, copula) {
+  p <- length(copula$all_names)
+  out <- matrix(stats::rnorm(as.double(n) * p), nrow = n, ncol = p)
+  colnames(out) <- copula$all_names
+  if (length(copula$important_names) == 0L) {
+    return(stats::pnorm(out))
+  }
+
+  z_imp <- matrix(stats::rnorm(as.double(n) * ncol(copula$load)), nrow = n) %*% t(copula$load)
+  for (b in seq_along(copula$blocks)) {
+    idx <- copula$blocks[[b]]
+    z_imp[, idx] <- z_imp[, idx] +
+      matrix(stats::rnorm(as.double(n) * length(idx)), nrow = n) %*% copula$block_caches[[b]]$root
+  }
+  out[, copula$important_names] <- z_imp
+  stats::pnorm(out)
 }
 
 ## Similar to the cora function from "Rfast" but uses different functions to calculate column means and row sums.
@@ -896,6 +1325,20 @@ sampleMVN <- function(n,
                       Sigma, 
                       n_cores = n_cores,
                       fastmvn = fastmvn) {
+  if (inherits(Sigma, "scdesign3_gaussian_fast_copula")) {
+    return(.scdesign3_sample_gaussian_fast_copula(n = n, copula = Sigma))
+  }
+
+  cache <- attr(Sigma, "scdesign3_gaussian_factor", exact = TRUE)
+  if (!is.null(cache)) {
+    mvnrv <- matrix(stats::rnorm(as.double(n) * ncol(cache$root)), nrow = n, byrow = TRUE) %*% cache$root
+    return(matrix(
+      stats::pnorm(mvnrv),
+      nrow = nrow(mvnrv),
+      ncol = ncol(mvnrv)
+    ))
+  }
+
   if_sparse <- methods::is(Sigma, "dsCMatrix")
   p <- dim(Sigma)[1]
   if(if_sparse) {

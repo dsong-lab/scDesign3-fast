@@ -25,7 +25,6 @@ Imports:
     SummarizedExperiment,
     SingleCellExperiment,
     mclust,
-    mvtnorm,
     parallel,
     pbmcapply,
     umap,
@@ -40,6 +39,7 @@ Imports:
 Suggests:
     scGLM,
     mvnfast,
+    mvtnorm,
     igraph,
     rvinecopulib,
     knitr,

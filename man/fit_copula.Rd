@@ -12,6 +12,11 @@ fit_copula(
   marginal_list,
   family_use,
   copula = "gaussian",
+  gaussian_copula = c("dense", "block_factor"),
+  gaussian_copula_rank = 50L,
+  gaussian_copula_block_size = 500L,
+  gaussian_copula_block_shrinkage = 0.05,
+  gaussian_copula_sketch_size = 1000L,
   DT = TRUE,
   pseudo_obs = FALSE,
   epsilon = 1e-06,
@@ -39,6 +44,23 @@ Default is 'counts'.}
 \item{family_use}{A string or a vector of strings of the marginal distribution. Must be one of 'poisson', 'nb', 'zip', 'zinb' or 'gaussian'.}
 
 \item{copula}{A string of the copula choice. Must be one of 'gaussian' or 'vine'. Default is 'gaussian'. Note that vine copula may have better modeling of high-dimensions, but can be very slow when features are >1000.}
+
+\item{gaussian_copula}{A string selecting the Gaussian copula backend. Must be
+one of \code{"dense"} or \code{"block_factor"}. \code{"dense"} keeps the
+original dense correlation backend. \code{"block_factor"} fits a low-rank
+global factor plus dense residual covariance blocks.}
+
+\item{gaussian_copula_rank}{Global factor rank for
+\code{gaussian_copula = "block_factor"}.}
+
+\item{gaussian_copula_block_size}{Maximum residual block size for
+\code{gaussian_copula = "block_factor"}.}
+
+\item{gaussian_copula_block_shrinkage}{Diagonal shrinkage applied to residual
+block covariances for \code{gaussian_copula = "block_factor"}.}
+
+\item{gaussian_copula_sketch_size}{Number of cells used to cluster genes into
+residual blocks for \code{gaussian_copula = "block_factor"}.}
 
 \item{DT}{A logic variable. If TRUE, perform the distributional transformation
 to make the discrete data 'continuous'. This is useful for discrete distributions (e.g., Poisson, NB).

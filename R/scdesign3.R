@@ -44,6 +44,16 @@
 #' @param corr_formula A string of the correlation structure.
 #' @param empirical_quantile Please only use it if you clearly know what will happen! A logic variable. If TRUE, DO NOT fit the copula and use the EMPIRICAL CDF values of the original data; it will make the simulated data fixed (no randomness). Default is FALSE. Only works if ncell is the same as your original data.
 #' @param copula A string of the copula choice. Must be one of 'gaussian' or 'vine'. Default is 'gaussian'. Note that vine copula may have better modeling of high-dimensions, but can be very slow when features are >1000.
+#' @param gaussian_copula A string selecting the Gaussian copula backend. Must be
+#' one of \code{"dense"} or \code{"block_factor"}.
+#' @param gaussian_copula_rank Global factor rank for
+#' \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_block_size Maximum residual block size for
+#' \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_block_shrinkage Diagonal shrinkage applied to residual
+#' block covariances for \code{gaussian_copula = "block_factor"}.
+#' @param gaussian_copula_sketch_size Number of cells used to cluster genes into
+#' residual blocks for \code{gaussian_copula = "block_factor"}.
 #' @param if_sparse A logic variable. Only works for Gaussian copula (\code{family_set = "gaussian"}). If TRUE, a thresholding strategy will make the corr matrix sparse.
 #' @param fastmvn An logical variable. If TRUE, the sampling of multivariate Gaussian is done by \code{mvnfast}, otherwise by \code{mvtnorm}. Default is FALSE. It only matters for Gaussian copula.
 #' @param DT A logic variable. If TRUE, perform the distributional transformation
@@ -133,6 +143,11 @@ scdesign3 <- function(sce,
                       corr_formula,
                       empirical_quantile = FALSE,
                       copula = "gaussian",
+                      gaussian_copula = c("dense", "block_factor"),
+                      gaussian_copula_rank = 50L,
+                      gaussian_copula_block_size = 500L,
+                      gaussian_copula_block_shrinkage = 0.05,
+                      gaussian_copula_sketch_size = 1000L,
                       if_sparse = FALSE,
                       fastmvn = FALSE,
                       DT = TRUE,
@@ -154,6 +169,7 @@ scdesign3 <- function(sce,
   allowed_copula <- c("gaussian", "vine")
   allowed_parallelization <- c("mcmapply", "bpmapply", "pbmcmapply")
   allowed_correlation_function <- c("default", "coop")
+  gaussian_copula <- match.arg(gaussian_copula)
   use_scglm <- match.arg(use_scglm)
   scglm_fit <- match.arg(scglm_fit)
   scglm_method <- match.arg(scglm_method)
@@ -236,6 +252,11 @@ scdesign3 <- function(sce,
       DT = DT,
       pseudo_obs = pseudo_obs,
       family_set = family_set,
+      gaussian_copula = gaussian_copula,
+      gaussian_copula_rank = gaussian_copula_rank,
+      gaussian_copula_block_size = gaussian_copula_block_size,
+      gaussian_copula_block_shrinkage = gaussian_copula_block_shrinkage,
+      gaussian_copula_sketch_size = gaussian_copula_sketch_size,
       n_cores = n_cores,
       important_feature = important_feature,
       if_sparse = if_sparse,
@@ -254,6 +275,11 @@ scdesign3 <- function(sce,
       DT = DT,
       pseudo_obs = pseudo_obs,
       family_set = family_set,
+      gaussian_copula = gaussian_copula,
+      gaussian_copula_rank = gaussian_copula_rank,
+      gaussian_copula_block_size = gaussian_copula_block_size,
+      gaussian_copula_block_shrinkage = gaussian_copula_block_shrinkage,
+      gaussian_copula_sketch_size = gaussian_copula_sketch_size,
       n_cores = n_cores,
       correlation_function = correlation_function,
       important_feature = important_feature,
