@@ -2,7 +2,7 @@
 
 ------------------------------------------------------------------------
 
-The R package **scDesign3-fast** is an accelerated distribution of **scDesign3**. It keeps the original `scDesign3` R package name and user-facing API, while adding shared-design GLM/GAM backends through **scGLM** to reduce repeated design-matrix construction and speed up supported marginal model fitting. The package is an all-in-one single-cell data simulation tool by using reference datasets with different cell states (cell types, trajectories or and spatial coordinates), different modalities (gene expression, chromatin accessibility, protein abundance, DNA methylation, etc), and complex experimental designs. The transparent parameters enable users to alter models as needed; the model evaluation metrics (AIC, BIC) and convenient visualization function help users select models. <span style="color:blue"> **Detailed tutorials that illustrate various functionalities of scDesign3 are available at this [website](https://songdongyuan1994.github.io/scDesign3/docs/index.html)**</span>. The following illustration figure summarizes the usage of scDesign3:
+The R package **scDesign3-fast** is an accelerated distribution of **scDesign3**. It keeps the original `scDesign3` R package name and user-facing API, while adding shared-design GLM/GAM backends through **scGLM** to reduce repeated design-matrix construction and speed up supported marginal model fitting. It also adds a faster Gaussian copula backend for atlas-level data. The package is an all-in-one single-cell data simulation tool by using reference datasets with different cell states (cell types, trajectories or and spatial coordinates), different modalities (gene expression, chromatin accessibility, protein abundance, DNA methylation, etc), and complex experimental designs. The transparent parameters enable users to alter models as needed; the model evaluation metrics (AIC, BIC) and convenient visualization function help users select models. <span style="color:blue"> **Detailed tutorials that illustrate various functionalities of scDesign3 are available at this [website](https://songdongyuan1994.github.io/scDesign3/docs/index.html)**</span>. The following illustration figure summarizes the usage of scDesign3:
 
 <img src="man/figures/scDesign3_illustration.png" width="600"/>
 
@@ -11,7 +11,9 @@ To find out more details about **scDesign3**, you can check out our manuscript o
 
 [Song, D., Wang, Q., Yan, G. *et al.* scDesign3 generates realistic in silico data for multimodal single-cell and spatial omics. *Nat Biotechnol* **42**, 247–252 (2024).](https://www.nature.com/articles/s41587-023-01772-1)
 
-The computational time is quadratic to the number of features used in copula modeling. Reducing this number will greatly speed up the calculation.
+The original dense Gaussian copula can be the main bottleneck when many genes are used for copula modeling. **scDesign3-fast** keeps the original dense backend as `gaussian_copula = "dense"` and adds `gaussian_copula = "block_factor"` for larger applications. The block-factor backend models broad transcriptome-wide dependence with a global factor and preserves local gene-gene dependence with dense residual covariance blocks. A low-rank-only Gaussian copula is not exposed because it is usually too inaccurate for real single-cell data.
+
+For atlas-level datasets, start with `gaussian_copula = "block_factor"`, `gaussian_copula_rank = 50`, and `gaussian_copula_block_size = 500`. Increase the rank when global programs or cell-state axes are underrepresented, increase the block size when local gene modules are too weak, and use a larger `gaussian_copula_sketch_size` when gene clustering is unstable. Use `gaussian_copula = "dense"` for small gene sets or when exact dense-copula likelihood and sampling are needed.
 
 Please note that the parallel computing of scDesign3 is mainly designed for **UNIX OS**; be careful when you set `n_cores`. Please note that you should consider **the balance** between `n_cores` and your ROM (memory). Simply increasing the number of cores without the increase of memory will slow down or froze your program. We recommend that you should allocate at least 1 GB for 1 core.
 
@@ -55,6 +57,7 @@ example_simu <- scdesign3(
     usebam = FALSE,
     corr_formula = "1",
     copula = "gaussian",
+    gaussian_copula = "dense",
     fastmvn = FALSE,
     DT = TRUE,
     pseudo_obs = FALSE,
@@ -86,6 +89,11 @@ The parameters of `scdesign3()` are:
 - `edf_flexible`: A logic variable. If TRUE, the degree of freedom for each gene's regression model will be automatically selected for acceleration.
 - `corr_formula`: A string of the correlation structure. For example, if you want to obtain a correlation structure for each cell type, then this parameter should be the column name of the cell type variable in the colData of sce.
 - `copula`: A string of the copula choice. Must be one of 'gaussian' or 'vine'. Default is 'gaussian'. Note that vine copula may have better modeling of high-dimensions, but can be very slow when features are >1000.
+- `gaussian_copula`: A string selecting the Gaussian copula backend. Use `"dense"` for the original dense correlation model, or `"block_factor"` for the faster atlas-scale Gaussian copula.
+- `gaussian_copula_rank`: The global factor rank used when `gaussian_copula = "block_factor"`. Larger values capture more broad cross-gene dependence but increase runtime and memory.
+- `gaussian_copula_block_size`: The maximum residual block size used when `gaussian_copula = "block_factor"`. Larger blocks preserve more local covariance structure but increase block Cholesky cost.
+- `gaussian_copula_block_shrinkage`: Diagonal shrinkage for residual covariance blocks when `gaussian_copula = "block_factor"`. Increase this value when block covariance estimates are unstable.
+- `gaussian_copula_sketch_size`: The number of cells used to cluster genes into residual blocks when `gaussian_copula = "block_factor"`. Larger sketches make block assignment more stable at extra preprocessing cost.
 - `fastmvn`: An logical variable. If TRUE, the sampling of multivariate Gaussian is done by mvnfast, otherwise by mvtnorm. Default is FALSE. It only matters for Gaussian copula.
 - `DT`: A logic variable. If TRUE, perform the distributional transformation to make the discrete data 'continuous'. This is useful for discrete distributions (e.g., Poisson, NB). Default is TRUE. Note that for continuous data (e.g., Gaussian), DT does not make sense and should be set as FALSE.
 - `pseudo_obs`: A logic variable. If TRUE, use the empirical quantiles instead of theoretical quantiles for fitting copula. Default is FALSE.
